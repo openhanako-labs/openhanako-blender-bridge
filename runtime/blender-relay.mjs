@@ -120,7 +120,26 @@ function leaseAcquire(holder, ttlMs, force) {
 }
 
 // 只读 op：即便别人持有租约也放行（否则连「看看现状」都会被挡）。
-// 名单照搬上游 server.mjs —— 它是按「会不会改场景」逐个核过的，不要自己增删。
+//
+// 这份名单与上游 server.mjs 的关系，得说准，否则它比没有注释更糟：
+//
+//   1) 与上游同名的路由（/rt/perf、/rt/loop、/rt/opt、/rt/plan、/rt/worker、
+//      /rt/txn、/rt/preset、/rt/job）：名单内容与上游逐条一致。
+//      前缀加了 /rt/ 是因为 relay 同时挂自研路由（/do、/render、/service），
+//      需要一个命名空间把它们分开。
+//
+//   2) /rt/plan 里比上游多 6 个 qc_* （qc_compare / qc_compare_auto /
+//      qc_self_check / qc_help / qc_render_catalog / qc_render_device_info）。
+//      这 6 个**上游根本没有**——它们是 relay 拼出来发给 engine 的 op 名，
+//      engine 按 qc_ 前缀分派。所以对的是「engine 的事实」，不是「上游的表」。
+//      它们确实不改场景，列在这里是对的，但不该被读成「从上游抄来的」。
+//
+//   3) /object/edit 是 relay 独有的路由（上游没有这个端点），
+//      它的只读项 trash_list 是本 App 自己的判断。
+//
+// ！维护规则：上游一改，第 1 类要手工同步；第 2/3 类不跟。
+//   从前这里只写了「名单照搬上游」，于是一个多做、一个没抄、一个抄错，
+//   三者看起来都一样——因为注释把三件事说成了一件事。
 const READ_ONLY_OPS = {
   "/rt/perf": ["status", "help"],
   "/rt/loop": ["status", "board", "help"],

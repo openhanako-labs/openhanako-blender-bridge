@@ -144,7 +144,7 @@
     },
     {
       id: "lease",
-      summary: "【写锁】多会话共存时避免互相踩。op=who（看当前持有者与剩余时间）/ acquire（拿写权限，可带 ttlMs，force 抢占）/ release（主动释放）/ renew（心跳续期）。\n当另一个会话改了场景、你的写操作返回 409 leased 时，先 op=who 看是谁，再决定等还是 force 抢。只读操作（体检/读场景/QC 比对）不受租约限制。",
+      summary: "【写锁】多会话共存时避免互相踩。op=who（看当前持有者与剩余时间）/ acquire（拿写权限，可带 ttlMs，force 抢占）/ release（主动释放）/ renew（心跳续期）。\n当另一个会话改了场景、你的写操作返回 409 leased 时，先 op=who 看是谁，再决定等还是 force 抢。只读操作（体检/读场景/QC 比对）不受租约限制。\n⚠ **租约保护的是「知道自己要写」的路。** 走 object op=add/remove、/rt/act、/rt/plan 这类显式写路由的动作受保护；**do 是逃生门，不受租约约束**——do 的价值就在能跑任意 Python，先拿写权限再跑会削掉它。多会话共存时用 do 改场景，需要你自己确认没有别人在同时改。",
     },
     {
       id: "worker",
