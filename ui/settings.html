@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blender 助手 · 设置</title>
+  <link rel="stylesheet" href="./assets/app.css">
+  <link rel="stylesheet" href="./assets/panel.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="head">
+      <div class="head-left"><span class="dot dot-idle"></span><span>Blender 助手 · 设置</span></div>
+    </header>
+
+    <section class="card">
+      <h2>addon 地址</h2>
+      <p class="hint">Blender 侧 addon 监听的地址。默认 127.0.0.1:9876。改完会自动重启中继。</p>
+      <div class="field-row">
+        <label class="field">
+          <span>主机</span>
+          <input id="host" type="text" value="127.0.0.1" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>端口</span>
+          <input id="port" type="number" value="9876" min="1" max="65535">
+        </label>
+      </div>
+      <div class="row">
+        <button id="save" class="btn btn-primary">保存并重连</button>
+        <span id="save-note" class="hint"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>投递目录</h2>
+      <p class="hint">
+        产物默认归档在 App 数据目录里（谁也拿得到、不会丢）。
+        如果还想把成品再拷一份到别处——比如 ComfyUI 的 input 目录、你自己的工程文件夹——
+        把绝对路径填在这里。留空就不拷。
+      </p>
+      <label class="field" style="display:block">
+        <span>目标目录（绝对路径）</span>
+        <input id="deliver" type="text" placeholder="例如 D:\\ComfyUI\\input" spellcheck="false">
+      </label>
+      <div class="row">
+        <button id="save-deliver" class="btn btn-primary">保存</button>
+        <span id="deliver-note" class="hint"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>归档</h2>
+      <p class="hint">
+        每次产出（一次多视角 / 一次 QC / 一次导出）收进一个 run 目录，带户口、可标记、可回溯。
+        带基线标记的永远保留，其余只留最近 20 个。
+      </p>
+      <p class="hint" id="runs-note"></p>
+      <div class="row">
+        <button id="prune" class="btn">看要清理什么</button>
+        <span id="prune-note" class="hint"></span>
+      </div>
+      <div id="prune-list" class="hint" style="margin-top:8px"></div>
+    </section>
+
+    <section class="card">
+      <h2>安装指引</h2>
+      <ol class="steps">
+        <li>装 Blender 本体（4.x / 5.x 均可）。</li>
+        <li>Blender 里 <b>Edit → Preferences → Add-ons → Install…</b>，选 <code>addon.py</code>，勾选启用。</li>
+        <li>3D 视图按 <b>N</b>，找 <b>MCP for Blender</b> 面板，点 <b>Connect</b>（默认 127.0.0.1:9876）。</li>
+        <li>回到工作台左栏看「中继」是不是「就绪」。</li>
+      </ol>
+      <p class="hint" id="workdir"></p>
+      <p class="hint" id="cfgpath"></p>
+    </section>
+  </div>
+  <script type="module" src="./assets/settings.js"></script>
+</body>
+</html>

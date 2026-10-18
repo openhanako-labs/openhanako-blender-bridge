@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="640" viewBox="0 0 1024 640">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#161b22"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="640" fill="url(#bg)"/>
+  <g stroke="#e8730c" stroke-width="3" fill="none" opacity="0.95">
+    <path d="M512 180 L672 272 L672 456 L512 548 L352 456 L352 272 Z"/>
+    <path d="M512 180 L512 364"/>
+    <path d="M512 364 L672 272"/>
+    <path d="M512 364 L352 272"/>
+    <path d="M352 456 L512 548 L672 456"/>
+  </g>
+  <g stroke="#39414d" stroke-width="1.5" fill="none" opacity="0.5">
+    <path d="M512 180 L512 364 L352 272 Z"/>
+    <path d="M512 364 L672 272 L672 456"/>
+  </g>
+  <circle cx="512" cy="364" r="4" fill="#e8730c"/>
+  <text x="512" y="612" text-anchor="middle" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="30" fill="#7d8794" letter-spacing="10">BLENDER</text>
+</svg>

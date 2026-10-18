@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blender 助手 · 状态</title>
+<style>
+/* 自包含色板：宿主注入主题后会打上 data-theme，届时下面这份兜底让位。
+   与 app.css 同源（数值取宿主 new-warm-paper 主题）。 */
+:root:not([data-theme]){
+  --bg:#F5EFE4; --bg-card:#FBF7EE; --sidebar-bg:#EFE8DB;
+  --text:#2A2622; --text-light:#574F47; --text-muted:#6B6158;
+  --border:#D8CFBE; --accent:#537D96; --accent-hover:#3F6179;
+  --green:#4A6B4A; --danger:#8B2C1F;
+}
+:root{
+  --s4:4px; --s6:6px; --s8:8px; --s10:10px; --s12:12px; --s16:16px; --s20:20px;
+  --bw:1px;
+  --r-sm:6px; --r-md:8px; --r-lg:12px; --r-pill:999px;
+  --fs-ui:14px; --fs-cap:12.5px; --fs-micro:11px;
+  --surface-1:rgba(127,127,127,.055);
+  --surface-2:rgba(127,127,127,.09);
+  --hover:rgba(127,127,127,.085);
+  --ease:cubic-bezier(.32,.72,0,1);
+  --t-fast:.12s; --t-mid:.2s;
+  --ok:var(--green,#4A6B4A);
+  --mono:ui-monospace,Consolas,'Cascadia Mono',monospace;
+  --sans:'Inter',system-ui,-apple-system,'Segoe UI','Noto Sans SC',sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:transparent;color:var(--text);
+  font:var(--fs-ui)/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{transition-duration:.01ms !important;animation-duration:.01ms !important}
+}
+.pad{padding:var(--s12) var(--s16) var(--s20)}
+
+.hd{display:flex;align-items:center;gap:var(--s8);margin-bottom:var(--s12)}
+.hd .t{font-weight:700;font-size:16px;letter-spacing:-.015em}
+.hd .sp{flex:1}
+
+/* ── 容器盒 ── */
+.box{background:var(--surface-1);border-radius:var(--r-lg);
+  padding:var(--s10) var(--s12);margin-bottom:var(--s10);
+  border:1px solid color-mix(in srgb,var(--border) 55%,transparent)}
+.box > .sec:first-child{margin-top:0}
+.box .row{border-bottom:0;padding:3px 0}
+.box .row + .row{border-top:1px dashed color-mix(in srgb,var(--border) 60%,transparent)}
+
+.sec{font-size:var(--fs-micro);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--text-muted);font-family:var(--mono);font-weight:700;
+  margin:var(--s16) 0 var(--s8);display:flex;align-items:center;gap:var(--s8);white-space:nowrap}
+.sec::after{content:'';flex:1;height:1px;background:var(--border)}
+
+.row{display:flex;align-items:baseline;gap:var(--s8);padding:4px 0;
+  border-bottom:1px dashed var(--border)}
+.row:last-child{border-bottom:0}
+.row .k{color:var(--text-muted);font-size:var(--fs-cap);flex:none;white-space:nowrap}
+.row .v{margin-left:auto;font-family:var(--mono);font-size:var(--fs-cap);text-align:right;
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.chip{font-size:var(--fs-micro);padding:2px 10px;border-radius:var(--r-pill);
+  background:var(--surface-2);color:var(--text-muted);font-family:var(--mono);white-space:nowrap;
+  transition:background var(--t-fast) var(--ease),color var(--t-fast) var(--ease)}
+.chip.ok{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.chip.bad{background:color-mix(in srgb,var(--danger) 16%,transparent);color:var(--danger)}
+.chip.run{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+
+/* 冷启动五格：未完成态要看得见（太浅会被当成"没这功能"） */
+.steps{display:flex;gap:4px;margin:var(--s10) 0 var(--s6)}
+.steps i{flex:1;height:5px;border-radius:var(--r-pill);
+  background:color-mix(in srgb,var(--text) 16%,transparent);
+  transition:background var(--t-mid) var(--ease)}
+.steps i.done{background:var(--ok)}
+.steps i.run{background:var(--accent);animation:bl 1.3s ease-in-out infinite}
+@keyframes bl{0%,100%{opacity:1}50%{opacity:.42}}
+
+button{font:inherit;font-size:var(--fs-cap);padding:8px var(--s12);border-radius:var(--r-md);
+  cursor:pointer;
+  border:1px solid color-mix(in srgb,var(--border) 62%,var(--text) 38%);
+  background:var(--bg-card);color:var(--accent);width:100%;
+  box-shadow:0 1px 2px rgba(0,0,0,.07);
+  transition:background var(--t-fast) var(--ease),color var(--t-fast) var(--ease),
+             border-color var(--t-fast) var(--ease),box-shadow var(--t-fast) var(--ease),
+             transform var(--t-fast) var(--ease)}
+button:hover{background:var(--accent);color:var(--bg-card);border-color:var(--accent);
+  box-shadow:0 2px 6px color-mix(in srgb,var(--accent) 30%,transparent)}
+button:active{transform:scale(.985);box-shadow:0 1px 1px rgba(0,0,0,.1)}
+button.primary{background:var(--accent);color:var(--bg-card);border-color:var(--accent);
+  box-shadow:0 1px 3px color-mix(in srgb,var(--accent) 34%,transparent)}
+button.primary:hover{background:var(--accent-hover,var(--accent));
+  box-shadow:0 2px 8px color-mix(in srgb,var(--accent) 42%,transparent)}
+button.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 50%,var(--border) 50%)}
+button.danger:hover{background:var(--danger);color:var(--bg-card);border-color:var(--danger)}
+button[disabled]{opacity:.4;cursor:default;box-shadow:none}
+button[disabled]:hover{background:var(--bg-card);color:var(--accent);border-color:var(--border)}
+
+.btnrow{display:flex;gap:var(--s8)}
+/* min-width:0 不能省：flex 子项默认 min-width:auto，
+   而 button 基础规则里有 width:100%（竖排按钮用）。两者一撞，
+   第二个按钮就被挤出可视区——看着就是“停止按钮没了”。 */
+.btnrow button{flex:1 1 0;min-width:0}
+.mt{margin-top:var(--s8)}
+
+.note{margin-top:var(--s10);font-size:var(--fs-micro);line-height:1.65;color:var(--text-muted)}
+.note.err{color:var(--danger);word-break:break-word}
+</style>
+</head>
+<body>
+<div class="pad">
+
+  <div class="hd">
+    <span class="t">Blender 助手</span>
+    <span class="sp"></span>
+    <span class="chip" id="phase">—</span>
+  </div>
+
+  <div class="box">
+    <div class="sec">通道</div>
+    <div class="row"><span class="k">中继端口</span><span class="v" id="port">—</span></div>
+    <div class="row"><span class="k">addon</span><span class="v" id="addon">—</span></div>
+    <div class="row"><span class="k">Blender</span><span class="v" id="blender">—</span></div>
+    <div class="row"><span class="k">主题</span><span class="v" id="theme">—</span></div>
+  </div>
+
+  <div class="box">
+    <div class="sec">冷启动</div>
+    <div class="steps" id="bs"><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="row"><span class="k" id="bnote">等待</span><span class="v" id="bsr">—</span></div>
+  </div>
+
+  <div class="box">
+    <div class="sec">归档</div>
+    <div class="row"><span class="k">run 数</span><span class="v" id="runtotal">—</span></div>
+    <div class="row"><span class="k">已采用</span><span class="v" id="runtag">—</span></div>
+    <div class="row"><span class="k">占用</span><span class="v" id="runbytes">—</span></div>
+  </div>
+
+  <div class="sec">服务</div>
+  <div class="btnrow">
+    <button class="primary" id="b-start">启动</button>
+    <button class="danger" id="b-stop">停止</button>
+  </div>
+  <button class="mt" id="b-relay">重启中继</button>
+  <div class="note" id="note" hidden></div>
+</div>
+<script type="module" src="./assets/sidepanel.js"></script>
+</body>
+</html>

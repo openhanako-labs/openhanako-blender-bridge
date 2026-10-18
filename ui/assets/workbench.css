@@ -1,0 +1,517 @@
+/* ─────────────────────────────────────────────────────────────
+   blender-bridge 工作台 —— 只写 app.css 里没有的部分
+   命名空间 wb-：不与已有样式（.split 已是对比视图、.cell 已是指标格）打架。
+
+   v1.4.0 视觉调整：方角改圆角、实心块改柔面、补过渡动效。
+   底色仍是冷白克制——不跟着宿主做成软糖。
+   ───────────────────────────────────────────────────────────── */
+
+/* hidden 属性只是个默认样式（display:none），任何设了 display 的规则都会把它顶掉。
+   .sec 设了 display:flex，于是 <div class="sec" hidden> 照旧显示——不报错，只是藏不住。 */
+[hidden] { display: none !important }
+
+.wb-msg { font-weight: 600; font-size: var(--fs-caption); margin-left: var(--space-6); color: var(--text-muted) }
+
+/* 主区用 flex 竖排：top 固定，pane 吃掉剩余并自己滚。 */
+.main { display: flex; flex-direction: column; overflow: hidden }
+
+/* ── 标签 ── */
+.wb-tabs {
+  display: flex; gap: 4px; padding: 3px;
+  background: var(--surface-1); border-radius: var(--radius-lg);
+}
+.wb-tabs button {
+  appearance: none; border: 0; background: transparent;
+  color: var(--text-muted); font: inherit; font-size: var(--fs-caption);
+  padding: 5px var(--space-12); border-radius: var(--radius-sm); cursor: pointer;
+  font-family: var(--mono); letter-spacing: .03em; white-space: nowrap;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.wb-tabs button:hover { color: var(--text); background: var(--hover) }
+.wb-tabs button.on {
+  color: var(--accent); background: var(--bg-card); font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .07);
+}
+
+/* ── 面板容器 ── */
+.wb-pane { display: none; flex: 1 1 auto; min-height: 0; overflow: hidden }
+.wb-pane.on { display: flex; flex-direction: column; animation: fade var(--t-slow) var(--ease) }
+@keyframes fade { from { opacity: 0; transform: translateY(3px) } to { opacity: 1; transform: none } }
+.wb-pad { padding: var(--space-16) var(--space-20) var(--space-20) }
+
+/* ── 产出：左列列表 + 右列详情 ── */
+/* 固定左列宽而不是 1fr 1fr：run 名字长短差很多，等宽会让长名字挤成一团。 */
+/* .wb 是固定高度格子（100%），它已经把高度接住了；
+   这里不能让 cols3 自己冒出去。 */
+.wb { display: grid; grid-template-columns: minmax(210px, 258px) minmax(0, 1fr); flex: 1 1 auto; min-height: 0 }
+.wb-list {
+  background: var(--bg-card); display: flex; flex-direction: column; min-height: 0;
+  border-right: var(--border-width) solid var(--border);
+}
+.wb-list .ph {
+  padding: var(--space-10) var(--space-12); border-bottom: var(--border-width) solid var(--border);
+  font-size: var(--fs-micro); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--text-muted); font-family: var(--mono); font-weight: 700;
+  display: flex; justify-content: space-between; gap: var(--space-8);
+}
+.wb-list .ph .c { font-weight: 400; letter-spacing: .05em }
+.wb-rlist { flex: 1 1 auto; overflow: auto; padding: var(--space-8) }
+
+.wb-rli {
+  padding: var(--space-8) var(--space-10); border-radius: var(--radius-md); cursor: pointer;
+  border-left: 3px solid transparent; margin-bottom: 2px;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+              transform var(--t-fast) var(--ease);
+}
+.wb-rli:hover { background: var(--hover); transform: translateX(1px) }
+.wb-rli.on { background: color-mix(in srgb, var(--accent) 11%, transparent); border-left-color: var(--accent) }
+.wb-rli.muted { color: var(--text-muted); font-size: var(--fs-caption); cursor: default }
+.wb-rli-h { display: flex; gap: var(--space-4); align-items: baseline }
+.wb-rli-h .star { color: var(--accent); font-size: var(--fs-caption); width: 11px; flex: none }
+.wb-rli-t { font-size: var(--fs-caption); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.wb-rli-m {
+  font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted);
+  margin-top: 2px; padding-left: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* detail 不再自己滚：让三栏各滚各的，整体不出一条页面级滚动条。 */
+.wb-detail { background: var(--bg); padding: var(--space-16) var(--space-20) var(--space-20); min-height: 0; overflow: hidden; display: flex; flex-direction: column }
+
+/* 高度链：main → .wb-pane(flex col) → .wb(flex 1) → .wb-detail(flex col) → #dbody(flex col, 100%)。
+   每一层都要能往下传，缺一环 flex:1 就退化成“按内容撑”——
+   量出来 cols3=957px 而容器只有 693px，多出的 264px 把页面撑出滚动，
+   在截图上看着就像“底部一大片空白”。 */
+#dbody { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0 }
+
+/* 空状态：只在列表空时出现在详情区，不说第二遍。
+   两栏都写「还没有产出」是重复，不是强调。 */
+.wb-empty { padding: var(--space-20) 0; text-align: center; color: var(--text-muted) }
+.wb-empty .et { font-size: var(--fs-title); font-weight: 600; color: var(--text); margin-bottom: var(--space-8) }
+.wb-empty .es { font-size: var(--fs-caption) }
+
+.wb-dhd {
+  display: flex; align-items: flex-start; gap: var(--space-12); justify-content: space-between;
+  padding-bottom: var(--space-12); border-bottom: var(--border-width) solid var(--border);
+}
+.wb-titles { min-width: 0 }
+.wb-dnm { font-size: 18px; font-weight: 700; letter-spacing: -.015em }
+.wb-did { font-size: var(--fs-micro); color: var(--text-muted); margin-top: 3px }
+.wb-dacts { display: flex; gap: var(--space-8); flex: none }
+.wb-dacts button.b { width: auto }
+
+/* 指标改成紧凑行：原来 3 列大格每格只有一行字，占着大片却空得发慌。
+   现在一列排开，靠标签宽度对齐——信息密度上去，才看得出东西。 */
+.wb-meta {
+  display: flex; flex-direction: column; gap: 1px;
+  margin: var(--space-12) 0; padding: var(--space-8) var(--space-12);
+  background: var(--surface-1); border-radius: var(--radius-lg);
+}
+.wb-cell {
+  display: flex; align-items: baseline; gap: var(--space-8);
+  padding: 4px 0;
+}
+.wb-cell + .wb-cell { border-top: 1px dashed color-mix(in srgb, var(--border) 60%, transparent) }
+.wb-cell .k {
+  flex: none; width: 52px;
+  font-size: var(--fs-micro); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-muted); font-family: var(--mono); font-weight: 700;
+}
+.wb-cell .v { font-size: var(--fs-caption); overflow-wrap: anywhere }
+
+.wb-files {
+  display: flex; flex-direction: column;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md); overflow: hidden; background: var(--bg-card);
+}
+.wb-files .frow { background: transparent; padding: var(--space-6) var(--space-12); grid-template-columns: 56px 1fr auto auto }
+.wb-files .frow:hover { background: var(--hover) }
+.wb-files .frow .ic { text-align: left }
+
+/* 窄栏里不能照搬宽布局：208px 放不下“类型 + 文件名 + 大小”三列。
+   但也不能只是改成竖排——不指定对齐的话文字会被居中，
+   看着像三个按钮叠在一起。左对齐 + 行内两端对齐才读得下去。 */
+.wb-params .wb-files { border: 0; background: transparent; gap: var(--space-4) }
+.wb-params .wb-files .frow {
+  display: grid; grid-template-columns: auto 1fr; gap: 0 var(--space-6);
+  align-items: baseline; text-align: left;
+  padding: var(--space-6) var(--space-8);
+  background: var(--bg-card); border-radius: var(--radius-sm);
+  border: var(--border-width) solid var(--border);
+}
+.wb-params .wb-files .frow .ic {
+  font-size: 9px; letter-spacing: .06em; text-align: left;
+  grid-column: 1; grid-row: 1;
+}
+.wb-params .wb-files .frow .sz {
+  grid-column: 2; grid-row: 1; text-align: right;
+  margin-left: 0; font-size: 9px; color: var(--text-muted);
+}
+.wb-params .wb-files .frow .nm {
+  grid-column: 1 / -1; grid-row: 2;
+  font-size: var(--fs-micro); overflow-wrap: anywhere;
+}
+
+.wb-notes {
+  margin: 0; background: var(--surface-1); border-radius: var(--radius-md);
+  padding: var(--space-12); font-family: var(--mono);
+  font-size: var(--fs-caption); line-height: 1.7; color: var(--text-light);
+  white-space: pre-wrap; overflow-x: auto;
+}
+
+/* 意见：跟 notes 区别开——notes 是产出的说明，feedback 是人给下一版的输入。
+   用强调色左边线标出来，让人一眼看出“这是我说过的话”。 */
+.wb-fb {
+  margin: 0; background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-left: 3px solid var(--accent); border-radius: var(--radius-sm);
+  padding: var(--space-10) var(--space-12); font-family: var(--mono);
+  font-size: var(--fs-caption); line-height: 1.75; color: var(--text-light);
+  white-space: pre-wrap; overflow-x: auto;
+}
+
+/* 写意见的输入框与右栏其他控件同一副面孔。
+   它比派活栏窄（这里只有 208px），回车提交、Shift+回车换行。 */
+#d-note {
+  width: 100%; box-sizing: border-box; margin-top: var(--space-8);
+  background: var(--surface-1); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: var(--space-8) var(--space-10);
+  font: var(--fs-caption)/1.6 var(--mono); resize: vertical; min-height: 44px;
+}
+#d-note:focus { outline: none; border-color: var(--accent) }
+.wb-fbrow {
+  display: flex; align-items: center; gap: var(--space-6);
+  margin-top: var(--space-6);
+}
+.wb-fbrow .sp { flex: 1 }
+
+/* 主图不能任其生长：一张宽幅对比图会把下面全推出去。 */
+.wb-hero {
+  position: relative; border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-lg); overflow: hidden;
+  margin: var(--space-16) 0; background: var(--bg-card);
+}
+.wb-hero img { display: block; width: 100%; max-height: 340px; object-fit: contain }
+
+/* ── 视口 / 场景 / 执行 / 日志 面板 ── */
+/* h2 要防压缩：容器一挤，中文标题会逐字换成竖排。
+   button.b 在 app.css 里是 width:100%（侧栏竖排用），行内语境必须放开。 */
+.rowhead { display: flex; align-items: center; gap: var(--space-8) }
+.rowhead h2 {
+  font-size: var(--fs-micro); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--text-muted); font-family: var(--mono); margin: 0; font-weight: 700;
+  white-space: nowrap; flex: none;
+}
+.rowhead button.b { width: auto; flex: none }
+.rowhead .sp { flex: 1 }
+.wb-mt { margin-top: var(--space-16) }
+.wb-mt-sm { margin-top: var(--space-10) }
+.wb-wide { margin-top: var(--space-8); width: 100% }
+.wb-noborder { border-bottom: 0; padding-top: var(--space-4) }
+
+.seg {
+  display: flex; gap: 3px; padding: 3px; flex: none;
+  background: var(--surface-1); border-radius: var(--radius-md);
+}
+.seg .b {
+  border: 0; border-radius: var(--radius-sm); width: auto; flex: none;
+  font-size: var(--fs-micro); padding: 4px var(--space-10); white-space: nowrap;
+  background: transparent; color: var(--text-muted);
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.seg .b:hover { background: var(--hover); color: var(--text) }
+.seg .b.on { background: var(--accent); color: var(--bg-card) }
+
+.viewport {
+  margin-top: var(--space-12); border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-lg); background: var(--bg-card); min-height: 240px;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.viewport img { display: block; width: 100%; height: auto }
+.viewport .ph { color: var(--text-muted); font-size: var(--fs-caption); text-align: center; padding: var(--space-20) }
+.viewport .ph b { display: block; color: var(--text); margin-bottom: var(--space-6); font-size: var(--fs-ui) }
+.vp-meta {
+  display: flex; gap: var(--space-16); margin-top: var(--space-8);
+  font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); min-height: 16px;
+}
+.vp-meta .grow { margin-left: auto }
+.wb-pad button.b { width: auto }
+
+.wb-scene {
+  margin-top: var(--space-12); border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md); background: var(--bg-card); max-height: 340px; overflow: auto;
+}
+.wb-scene .ph { color: var(--text-muted); font-size: var(--fs-caption); padding: var(--space-16); text-align: center }
+.wb-scene .srow {
+  display: grid; grid-template-columns: 68px 1fr auto; gap: var(--space-8);
+  padding: 5px var(--space-12); border-bottom: var(--border-width) solid var(--border);
+  font-size: var(--fs-caption); align-items: center;
+}
+.wb-scene .srow:last-child { border-bottom: 0 }
+.wb-scene .srow:hover { background: var(--hover) }
+.wb-scene .srow .ty { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); text-transform: uppercase }
+.wb-scene .srow .nm { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+
+/* 小号按钮：场景行里的删除。比主按钮矮一档，不抢视线 */
+.b.mini {
+  padding: 1px var(--space-8); font-size: var(--fs-micro); line-height: 1.5;
+  border-radius: var(--radius-sm); opacity: .75;
+}
+.b.mini:hover { opacity: 1 }
+.b.mini.del:hover { color: var(--danger); border-color: var(--danger) }
+.b.mini.danger { color: var(--danger); border-color: var(--danger) }
+
+.sel {
+  font-family: var(--sans); font-size: var(--fs-caption); color: var(--text);
+  background: var(--bg-card); border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm); padding: 3px var(--space-8); min-width: 88px;
+}
+#trash-box { margin-top: var(--space-8); display: flex; flex-wrap: wrap; gap: var(--space-6); align-items: center }
+#trash-box .mhint { width: 100% }
+
+textarea#code {
+  width: 100%; min-height: 150px; margin-top: var(--space-10);
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-card); color: var(--text); font: var(--fs-caption)/1.7 var(--mono);
+  padding: var(--space-12); resize: vertical; outline: none;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+textarea#code:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.warn {
+  margin-top: var(--space-10); padding: var(--space-8) var(--space-12); border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border: var(--border-width) solid color-mix(in srgb, var(--danger) 32%, transparent);
+  color: var(--danger); font-size: var(--fs-caption); font-family: var(--mono);
+}
+
+.wb-result, .wb-log {
+  margin: var(--space-12) 0 0; background: var(--surface-1);
+  border-radius: var(--radius-md); padding: var(--space-12);
+  font-family: var(--mono); font-size: var(--fs-caption); line-height: 1.7;
+  color: var(--text-light); white-space: pre-wrap; overflow-x: auto;
+}
+.wb-result { max-height: 320px; min-height: 0 }
+.wb-result:empty { display: none }
+.wb-log { max-height: calc(100vh - 150px); overflow: auto }
+
+/* ── 自由意见框 ──
+   与预设按钮同级，不是附属：只给选项等于把话堵死，
+   人想说的常常不在选项里。 */
+.msgbox { margin-top: var(--space-10) }
+.msgbox .mlabel {
+  display: block; font-size: var(--fs-micro); letter-spacing: .12em;
+  text-transform: uppercase; color: var(--text-muted);
+  font-family: var(--mono); margin-bottom: var(--space-6);
+}
+.msgbox textarea {
+  width: 100%; min-height: 54px; display: block;
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-card); color: var(--text);
+  font: var(--fs-caption)/1.6 var(--sans); padding: var(--space-10) var(--space-12);
+  resize: vertical; outline: none;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.msgbox textarea::placeholder { color: var(--text-muted); opacity: .8 }
+.msgbox textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.msgrow { display: flex; align-items: center; gap: var(--space-10); margin-top: var(--space-8) }
+.msgrow .go {
+  appearance: none; border: 0; background: var(--accent); color: var(--bg-card);
+  font: 600 var(--fs-caption)/1 var(--sans); padding: 8px var(--space-16);
+  border-radius: var(--radius-md); cursor: pointer;
+  transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.msgrow .go:hover { background: var(--accent-hover, var(--accent)) }
+.msgrow .go:active { transform: scale(.98) }
+.msgrow .go[disabled] { opacity: .45; cursor: default; transform: none }
+.mhint { font-size: var(--fs-micro); color: var(--text-muted); font-family: var(--mono) }
+
+/* ── 三栏：缩略图 / 大图 / 参数与产物 ──
+   用户选的组合（A 的骨架 + 紧凑 + 三栏）。三个栏各司其职：
+   左栏选图、中间看、右栏读数值与产物。一屏之内不用滚。 */
+.wb-cols3 {
+  display: grid; grid-template-columns: 84px minmax(0, 1fr) 208px;
+  /* 吃满详情区剩下的高度。
+     之前怕信箱边所以封顶 430px，结果三栏下面空出 195px——
+     把“空”从图里挪到了图下面，等于没修。
+     真正的解法：让信箱边的颜色取自图片自己的背景色（见 renderShots），
+     变成无缝的。
+     min-height:0 不可少：flex 子项默认 min-height:auto，会按内容撑破容器
+     （实测过 957px vs 容器 693px）。 */
+  gap: var(--space-12); margin-top: var(--space-12);
+  flex: 1 1 auto; min-height: 0;
+  align-items: stretch;
+}
+
+.wb-thumbs {
+  display: flex; flex-direction: column; gap: var(--space-6);
+  overflow: auto; min-height: 0;
+}
+.wb-th {
+  cursor: pointer; border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md); padding: 2px; background: var(--bg-card);
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.wb-th:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)) }
+.wb-th.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.wb-th .im {
+  height: 44px; border-radius: 5px; background: var(--surface-1) center/cover no-repeat;
+}
+.wb-th .lb {
+  font-family: var(--mono); font-size: 9px; color: var(--text-muted);
+  text-align: center; padding: 3px 0 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wb-th.on .lb { color: var(--accent); font-weight: 700 }
+
+/* 大图不能任其生长：一张宽幅对比图会把下面全推出去。 */
+/* 舞台底色不由 CSS 定，而取自图片自己的边缘像素（见 renderShots）。
+   视口截图是深色的，信箱边用浅色就是两道白带。 */
+.wb-stage {
+  position: relative; border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-lg); overflow: hidden;
+  background-color: var(--surface-1);
+  display: flex; align-items: center; justify-content: center; min-height: 0;
+}
+.wb-stage img { display: block; width: 100%; height: 100%; object-fit: contain }
+.wb-stage .ph {
+  color: var(--text-muted); font-size: var(--fs-caption); text-align: center;
+  padding: var(--space-20);
+}
+.wb-stage .ph b { display: block; color: var(--text); margin-bottom: var(--space-6); font-size: var(--fs-ui) }
+.wb-stage-tag {
+  position: absolute; left: var(--space-10); top: var(--space-10);
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em;
+  padding: 3px var(--space-8); border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-card) 90%, transparent);
+  color: var(--text-light); border: var(--border-width) solid var(--border);
+}
+
+.wb-params {
+  background: var(--surface-1); border-radius: var(--radius-lg);
+  padding: var(--space-10) var(--space-12); min-width: 0;
+  /* 高度由外层的 grid-auto-rows 定；这里只负责“装不下就自己滚”。 */
+  min-height: 0; overflow: auto;
+}
+.wb-kvlist { display: flex; flex-direction: column; flex: none }
+.wb-kvlist .wb-cell { padding: 3px 0 }
+.wb-kvlist .wb-cell + .wb-cell { border-top: 1px dashed color-mix(in srgb, var(--border) 60%, transparent) }
+.wb-kvlist .wb-cell .k { width: 42px }
+.wb-kvlist .wb-cell .v { font-family: var(--mono); font-size: var(--fs-caption); text-align: right; margin-left: auto }
+
+.wb-params .sec { margin: var(--space-12) 0 var(--space-6) }
+.wb-params .sec .c { font-weight: 400; letter-spacing: .05em }
+
+/* 备注：外层整栏已经在滚了，这里再套一层滚动是双重负担。 */
+.wb-params .wb-notes {
+  font-size: var(--fs-micro); line-height: 1.6;
+}
+
+/* 折叠按钮：备注很长，默认展开会把右栏顶穿。
+   它是“查得到就行”的信息，不是首先要看的。 */
+.wb-fold {
+  appearance: none; border: 0; background: transparent;
+  color: var(--accent); font: 600 9.5px var(--mono); letter-spacing: .06em;
+  cursor: pointer; padding: 0; text-transform: none; flex: none;
+}
+.wb-fold:hover { text-decoration: underline }
+
+/* 重拍确认条：横在详情头部与三栏之间。
+   用的不是弹窗，因为弹窗会把整个页面担住；
+   而这件事只需要一句话 + 两个选择。 */
+.wb-confirm {
+  display: flex; align-items: flex-start; gap: var(--space-12);
+  margin: 0 0 var(--space-8); padding: var(--space-8) var(--space-12);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-left: 3px solid var(--accent); border-radius: var(--radius-sm);
+}
+.wb-confirm-tx {
+  flex: 1; white-space: pre-line;
+  font: var(--fs-caption)/1.7 var(--mono); color: var(--text-light);
+}
+.wb-confirm-btns { display: flex; gap: var(--space-6); flex: none; }
+/* 不抢 .sec::after 那条横线（它排在按钮后面），按钮就贴在计数旁边。 */
+.wb-params .sec { gap: var(--space-6) }
+.wb-params #d-fb-empty { margin-top: 2px }
+
+/* ── 派活栏 ──
+   常驻底部：这是 App 的主要动作，不是某标签页的附属。 */
+.wb-compose { flex: none; padding: var(--space-10) var(--space-20) var(--space-16) }
+.wb-compose-in {
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-lg);
+  background: var(--bg-card); padding: var(--space-10) var(--space-12);
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.wb-compose-in:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.wb-compose-lb {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--text-muted); margin-bottom: var(--space-6);
+}
+.wb-compose-lb u { text-decoration: none; color: var(--accent) }
+.wb-compose textarea {
+  width: 100%; border: 0; background: transparent; resize: none; outline: none;
+  color: var(--text); font: var(--fs-caption)/1.6 var(--sans); min-height: 36px; display: block;
+}
+.wb-compose textarea::placeholder { color: var(--text-muted); opacity: .85 }
+.wb-compose-row { display: flex; align-items: center; gap: var(--space-10); margin-top: var(--space-8) }
+.wb-compose-row .sp { flex: 1 }
+.wb-pick { display: flex; align-items: center; gap: var(--space-6); flex: none }
+.wb-pick > span {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.wb-pick select {
+  appearance: none; border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm); background-color: var(--bg-card); color: var(--text);
+  font: var(--fs-micro) var(--sans); padding: 4px var(--space-20) 4px var(--space-8);
+  max-width: 150px; cursor: pointer; outline: none;
+  /* appearance:none 会把浏览器自带的箭头一起干掉。抹掉了就得自己画一个——
+     不画的话，下拉框和普通输入框长得一模一样，人不知道那能点。 */
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 9px center, right 5px center;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.wb-pick select:hover { background-color: color-mix(in srgb, var(--sidebar-bg) 55%, var(--bg-card)) }
+.wb-pick select:focus { border-color: var(--accent) }
+
+/* 标签页说明：不是每个标签都自解释。“执行”是干嘛的，得写出来。 */
+.wb-exp {
+  margin: var(--space-10) 0 0; font-size: var(--fs-caption); line-height: 1.7;
+  color: var(--text-light); max-width: 68ch;
+}
+.wb-exp b { color: var(--text) }
+
+.wb-compose .go {
+  appearance: none; border: 0; border-radius: var(--radius-md); cursor: pointer; flex: none;
+  background: var(--accent); color: var(--bg-card);
+  font: 600 var(--fs-caption)/1 var(--sans); padding: 8px var(--space-16);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 34%, transparent);
+  transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.wb-compose .go:hover { background: var(--accent-hover, var(--accent)) }
+.wb-compose .go:active { transform: scale(.98) }
+.wb-compose .go[disabled] { opacity: .5; cursor: default; transform: none }
+
+@media (max-width: 860px) {
+  .wb-cols3 { grid-template-columns: 74px minmax(0, 1fr) }
+  .wb-params { grid-column: 1 / -1 }
+}
+
+@media (max-width: 760px) {
+  .wb { grid-template-columns: 1fr }
+  .wb-list { border-right: 0; border-bottom: var(--border-width) solid var(--border) }
+}

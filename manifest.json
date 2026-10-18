@@ -1,0 +1,69 @@
+{
+  "manifestVersion": 2,
+  "id": "blender-bridge",
+  "name": "Blender 助手",
+  "version": "1.45.0",
+  "description": "把本机 Blender 接进 Hana：模型可以直接看视口、执行 bpy 代码、读场景结构、发起渲染并可取回图像。经受管中继连 Blender 侧 addon（127.0.0.1:9876），支持服务起停（计划任务，独立于 Hana 存活）。产出自动归档成带户口的 run 目录（可标基线、可回溯）。多会话共存有写锁防互踩。",
+  "entry": "index.js",
+  "icon": "assets/icon.svg",
+  "minAppVersion": "0.944.0",
+  "network": {
+    "allowedHosts": [
+      "127.0.0.1"
+    ],
+    "methods": [
+      "GET",
+      "POST"
+    ],
+    "allowLocalhost": true,
+    "defaultTimeoutMs": 30000,
+    "maxResponseBytes": 16777216
+  },
+  "capabilities": [
+    "app/tools.expose-to-model",
+    "app/runtime.execute",
+    "app/runtime.local-machine",
+    "app/runtime.network",
+    "app/resources.read",
+    "app/resources.write",
+    "app/tasks.manage",
+    "app/session.start-turn",
+    "app/sessions.manage",
+    "app/sessions.read",
+    "app/agents.read",
+    "app/session.switch-model"
+  ],
+  "contributes": {
+    "cards": [
+      {
+        "id": "workbench",
+        "title": "Blender 助手",
+        "description": "整页工作台：产出归档（run 列表 + 主图 + 产物清单）、标基线、写意见、视口取景、场景树、bpy 执行。",
+        "route": "/workbench.html",
+        "realization": "page",
+        "siteNavEntry": true,
+        "fpFullPanel": true,
+        "closable": false,
+        "cardForm": "flush",
+        "titlebar": "solid",
+        "functionPanel": {
+          "id": "status",
+          "label": "Blender 状态",
+          "route": "/sidepanel.html"
+        },
+        "detached": {
+          "route": "/workbench.html"
+        },
+        "face": {
+          "image": "assets/cover.svg"
+        }
+      }
+    ],
+    "settings": {
+      "title": "Blender 助手",
+      "ui": {
+        "route": "/settings.html"
+      }
+    }
+  }
+}

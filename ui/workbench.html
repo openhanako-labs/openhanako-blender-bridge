@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blender 助手</title>
+<link rel="stylesheet" href="assets/app.css">
+<link rel="stylesheet" href="assets/workbench.css">
+</head>
+<body>
+<div class="shell shell-solo">
+
+  <!-- 主区。状态与服务操作交给宿主侧栏（functionPanel → sidepanel.html），
+       这里不再自带左栏——两处显示同一批状态，人会不知道该看哪个。 -->
+  <main class="main">
+    <div class="top">
+      <div class="wb-tabs" id="tabs">
+        <button data-t="runs" class="on">产出</button>
+        <button data-t="scene">场景</button>
+        <button data-t="log">日志</button>
+      </div>
+      <!-- 状态跟标签挨着：它俩是一伙的（“在哪页”+“通道通不通”）。
+           甩到最右边会撞上宿主控件区——卡片右上 100×40 是宿主的。 -->
+      <span class="chip" id="phase-mini">—</span>
+      <span class="sp"></span>
+      <span class="dot" id="dot"></span><span class="wb-msg" id="msg"></span>
+    </div>
+
+    <!-- ── 产出：左列表 + 右三栏 ── -->
+    <section class="wb-pane on" id="p-runs">
+      <div class="wb">
+        <section class="wb-list">
+          <div class="ph">产出归档 <span class="c" id="lcnt"></span></div>
+          <div class="wb-rlist" id="rlist"></div>
+        </section>
+
+        <section class="wb-detail" id="detail">
+          <div class="wb-empty" id="empty">
+            <div class="et">还没有产出</div>
+            <div class="es">让助手跑一次出图 / QC / 导出，产物会自动收进这里。</div>
+          </div>
+
+          <div id="dbody" hidden>
+            <div class="wb-dhd">
+              <div class="wb-titles">
+                <div class="wb-dnm" id="d-label">—</div>
+                <div class="wb-did mono" id="d-id">—</div>
+              </div>
+              <div class="wb-dacts">
+                <button class="b primary" id="d-baseline">采用</button>
+                <button class="b" id="d-shoot">拍一组视图</button>
+                <button class="b" id="d-load">装入场景</button>
+                <button class="b" id="d-delivered">已投递</button>
+                <button class="b" id="d-untag">取消标记</button>
+              </div>
+            </div>
+
+            <!-- 重拍确认条。默认藏着。
+                 —— “拍一组视图”不是无副作用的事：
+                    它拍的是**此刻场景**，而重拍会盖掉已有的图。
+                    两者都可能跟“这一版”对不上，所以拍之前得先说清楚。 -->
+            <div class="wb-confirm" id="d-shoot-confirm" hidden>
+              <div class="wb-confirm-tx" id="d-shoot-why"></div>
+              <div class="wb-confirm-btns">
+                <button class="b primary mini" id="d-shoot-yes" type="button">重拍</button>
+                <button class="b mini" id="d-shoot-no" type="button">取消</button>
+              </div>
+            </div>
+
+            <!-- 三栏：缩略图 / 大图 / 参数与产物。一屏看全，不用滚。 -->
+            <div class="wb-cols3">
+              <div class="wb-thumbs" id="d-thumbs"></div>
+
+              <div class="wb-stage" id="d-stage">
+                <img id="d-hero" alt="产出主图">
+                <span class="wb-stage-tag" id="d-stage-tag" hidden></span>
+                <div class="ph" id="d-stage-ph"><b>这一版没有图</b>产物里没有可显示的图片</div>
+              </div>
+
+              <div class="wb-params">
+                <div class="wb-kvlist" id="d-meta"></div>
+
+                <div class="sec">产物 <span class="c" id="d-fcount"></span></div>
+                <div class="wb-files" id="d-files"></div>
+
+                <div class="sec" id="d-notes-h" hidden>
+                  <span>备注</span><b id="d-notes-n"></b>
+                  <button class="wb-fold" id="d-notes-toggle" type="button">展开</button>
+                </div>
+                <pre class="wb-notes" id="d-notes" hidden></pre>
+
+                <div class="sec">意见 <span class="c" id="d-fbcount"></span></div>
+                <pre class="wb-fb" id="d-fb" hidden></pre>
+                <div class="mhint" id="d-fb-empty">还没写过意见</div>
+                <!-- 写意见的入口。
+                     后端 /runs/feedback 一直就在，只是前端从没接上——
+                     代码里 $('d-note')/$('d-hint') 早就引用了这两个 id，
+                     但 HTML 里没有，于是每次渲染都抛 TypeError。
+                     这里把缺的那半补上。 -->
+                <textarea id="d-note" rows="2" placeholder="这一版哪儿不对 / 下次要改什么…"></textarea>
+                <div class="wb-fbrow">
+                  <span class="mhint" id="d-hint">回车提交（Shift+回车换行）</span>
+                  <span class="sp"></span>
+                  <button class="b mini" id="d-fb-send" type="button">记下</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ── 场景：结构 + 手动改 ──
+         原来的「视口」tab 已去掉：视图现在由收口时自动拍（runs op=views），
+         在产出页就能看到各个方位，不需要一个专门的“拍一张”面板。
+         场景树与执行 Python 合到这里——两件事都是“手动看/改场景”。 -->
+    <section class="wb-pane" id="p-scene">
+      <div class="wb-pad">
+        <div class="rowhead">
+          <h2>场景</h2>
+          <span class="sp"></span>
+          <span class="mhint" id="scene-count">—</span>
+          <span class="mhint" id="scene-short"></span>
+          <button class="b" id="b-scene">刷新</button>
+        </div>
+        <div class="rowhead wb-mt-sm">
+          <select class="sel" id="add-kind">
+            <option value="cube">立方体</option>
+            <option value="sphere">球</option>
+            <option value="cylinder">圆柱</option>
+            <option value="cone">圆锥</option>
+            <option value="torus">圆环</option>
+            <option value="plane">平面</option>
+            <option value="monkey">猴头</option>
+          </select>
+          <button class="b" id="b-add">新建</button>
+          <button class="b" id="b-trash">回收站</button>
+          <span class="sp"></span>
+          <span class="mhint">删除是移入回收站，可恢复</span>
+        </div>
+        <div class="wb-scene" id="tree"><div class="ph">等待读取场景…</div></div>
+        <div id="trash-box" hidden></div>
+
+        <div class="rowhead wb-mt">
+          <h2>执行 Python</h2>
+          <span class="sp"></span>
+        </div>
+        <p class="wb-exp">
+          直接让 Blender 跑一段 bpy 代码，用完就扔——不用存成脚本。
+          模型说“帮我改个参数”时，它的“手”就是这里；改完的东西会留在场景里。
+          不确定的改动先 <b>mark</b> 打回退点。
+        </p>
+        <textarea id="code" spellcheck="false" placeholder="# bpy 可用。例：bpy.ops.mesh.primitive_cube_add(size=2, location=(0,0,1))"></textarea>
+        <div class="rowhead wb-mt-sm">
+          <button class="b primary" id="b-run">执行</button>
+          <button class="b" id="b-mark">mark</button>
+          <span class="sp"></span>
+          <span class="mhint" id="run-hint"></span>
+        </div>
+        <div class="warn" id="danger" hidden></div>
+        <pre class="wb-result" id="result"></pre>
+      </div>
+    </section>
+
+    <!-- ── 日志 ──
+         这一页靠请求自动填（见 workbench.js 的 api()）。
+         列的是：谁、去哪儿、回什么、多久、失败原因——
+         就是为了出事时不用再让别人手动拓控制台。 -->
+    <section class="wb-pane" id="p-log">
+      <div class="wb-pad">
+        <div class="rowhead">
+          <h2>日志</h2>
+          <span class="sp"></span>
+          <span class="mhint">服务端 + 本页，含工具面（模型）的调用</span>
+          <button class="b" id="b-refresh-log">刷新</button>
+          <button class="b" id="b-copy-log">复制</button>
+          <button class="b" id="b-clear">清空</button>
+        </div>
+        <div class="wb-log" id="log"></div>
+      </div>
+    </section>
+
+    <!-- ── 派活栏 ──
+         常驻在底部：这是这个 App 的主要动作，不是某个标签页的附属。
+         它做的事跟「记录意见」不同——意见存到这一版上给下一版当输入；
+         派活是把要求真的送进会话，让助手开始干。 -->
+    <div class="wb-compose" id="compose">
+      <div class="wb-compose-in">
+        <div class="wb-compose-lb">
+          让助手做什么 <u>— 会带上当前这一版的目录与之前的意见</u>
+        </div>        <textarea id="d-brief" rows="2" placeholder="例如：炮口再长 12 厘米，主炮仰角降到 15°；出完图顺手和上一版比一次"></textarea>
+        <div class="wb-compose-row">
+          <label class="wb-pick">
+            <span>助手</span>
+            <select id="d-agent"><option value="">读取中…</option></select>
+          </label>
+          <label class="wb-pick">
+            <span>模型</span>
+            <select id="d-model"><option value="">跟随会话</option></select>
+          </label>
+          <span class="sp"></span>
+          <span class="mhint" id="d-dhint">回车提交 · Shift+回车换行</span>
+          <button class="go" id="d-dispatch">派给助手</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script type="module" src="./assets/workbench.js"></script>
+</body>
+</html>

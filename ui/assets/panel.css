@@ -1,0 +1,176 @@
+/* ui/assets/panel.css — Blender 桥 · 控制台（跟随宿主主题，瑞士极简）
+
+   主题变量跟 app.css / workbench.css 用同一套：--bg / --bg-card / --text / ...
+
+   ！这里踩过：早先写的是 var(--hana-bg, #0d1117) / var(--hana-fg, #e6edf3)
+   —— 而“--hana-bg”这个变量名 **从来没被注入过**（host-theme.js 发的是 --bg、--text）。
+   于是它永远回退到 fallback 的深色，在浅色宿主主题上就是深底深字——
+   不是“颜色调得不好”，是根本没连上宿主。
+   （同一个 App 里 workbench 看得清、设置页看不清，就是这个差别。） */
+
+:root {
+  /* 这两个直接取宿主的变量，不再自己包一层带 fallback 的别名——
+     多一层没好处，只会多一个写错名字的机会。 */
+  --bb-bg: var(--bg, #F5EFE4);
+  --bb-fg: var(--text, #2A2622);
+  --bb-muted: var(--text-muted, #6B6158);
+  --bb-line: var(--border, #D8CFBE);
+  --bb-card: var(--bg-card, #FBF7EE);
+  /* 强调/状态色也跟宿主走，不自己定义一套硬色值 */
+  --bb-accent: var(--accent, #537D96);
+  --bb-ok: var(--green, #4A6B4A);
+  --bb-warn: var(--accent-hover, #3F6179);
+  --bb-err: var(--danger, #8B2C1F);
+  --bb-mono: var(--mono, ui-monospace, Menlo, Consolas, monospace);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: transparent;
+  color: var(--bb-fg);
+  font-family: -apple-system, "Segoe UI", "Noto Sans SC", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.shell { padding: 14px 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+.mono { font-family: var(--bb-mono); font-size: 12px; }
+
+/* 顶栏 */
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--bb-line);
+}
+.head-left { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: 0.02em; }
+.head-actions { display: flex; gap: 6px; }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bb-muted); flex: none; }
+.dot-ready { background: var(--bb-ok); box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.16); }
+.dot-starting { background: var(--bb-warn); animation: pulse 1.4s ease-in-out infinite; }
+.dot-error { background: var(--bb-err); }
+.dot-idle, .dot-stopped, .dot-unknown { background: var(--bb-muted); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* 按钮：极简方角 */
+.btn {
+  appearance: none;
+  border: 1px solid var(--bb-line);
+  background: transparent;
+  color: var(--bb-fg);
+  padding: 5px 11px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.btn:hover { background: var(--bb-card); border-color: var(--bb-line); }
+.btn-primary { border-color: var(--bb-accent); color: var(--bb-accent); }
+.btn-primary:hover { background: rgba(232, 115, 12, 0.1); }
+.btn-ghost { border-color: transparent; color: var(--bb-muted); }
+.btn-ghost:hover { color: var(--bb-fg); background: var(--bb-card); }
+
+/* 卡片 */
+.card {
+  border: 1px solid var(--bb-line);
+  border-radius: 6px;
+  padding: 12px 14px;
+  background: var(--bb-card);
+}
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--bb-muted);
+}
+.card-head { display: flex; align-items: center; justify-content: space-between; }
+.card-head h2 { margin-bottom: 0; }
+
+.grid { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(280px, 1.3fr); gap: 12px; }
+@media (max-width: 620px) { .grid { grid-template-columns: 1fr; } }
+
+pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+#status-detail { color: var(--bb-fg); opacity: 0.88; }
+
+/* 打印区 */
+.shot-wrap {
+  position: relative;
+  border: 1px solid var(--bb-line);
+  border-radius: 4px;
+  background: var(--surface-1, rgba(127,127,127,.055));
+  min-height: 168px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+#shot { display: block; width: 100%; height: auto; }
+.hidden { display: none !important; }
+.empty { color: var(--bb-muted); font-size: 12px; margin: 0; padding: 24px; text-align: center; }
+.note { color: var(--bb-muted); margin: 6px 0 0; }
+
+/* 代码区 */
+textarea {
+  width: 100%;
+  border: 1px solid var(--bb-line);
+  border-radius: 4px;
+  /* 不用 rgba(0,0,0,.28)：那是黑色叠层，在浅色主题上就是一个黑坑。
+     宿主生态用中性半透明（--surface-*），深浅都能用。 */
+  background: var(--surface-1, rgba(127,127,127,.055));
+  color: var(--bb-fg);
+  padding: 9px 10px;
+  resize: vertical;
+  outline: none;
+  font-family: var(--bb-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+textarea:focus { border-color: var(--bb-accent); }
+.row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.hint { color: var(--bb-muted); font-size: 11px; }
+.result { margin-top: 8px; color: var(--bb-muted); max-height: 180px; overflow: auto; }
+
+/* 日志 */
+.log { max-height: 190px; overflow: auto; display: flex; flex-direction: column; gap: 3px; }
+.log-row { display: flex; gap: 8px; font-family: var(--bb-mono); font-size: 11.5px; }
+.log-time { color: var(--bb-muted); flex: none; opacity: 0.7; }
+.log-text { word-break: break-word; }
+.log-ok .log-text { color: var(--bb-ok); }
+.log-warn .log-text { color: var(--bb-warn); }
+.log-err .log-text { color: var(--bb-err); }
+
+/* 设置页 */
+.field-row { display: flex; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--bb-muted); }
+.field input {
+  border: 1px solid var(--bb-line);
+  border-radius: 4px;
+  background: var(--surface-1, rgba(127,127,127,.055));
+  color: var(--bb-fg);
+  padding: 6px 9px;
+  font-family: var(--bb-mono);
+  font-size: 12px;
+  outline: none;
+  min-width: 120px;
+}
+.field input:focus { border-color: var(--bb-accent); }
+.steps { margin: 0; padding-left: 20px; color: var(--bb-fg); opacity: 0.9; }
+.steps li { margin-bottom: 6px; }
+.steps code {
+  font-family: var(--bb-mono);
+  font-size: 11.5px;
+  background: var(--surface-2, rgba(127,127,127,.09));
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.steps b { color: var(--bb-accent); }
