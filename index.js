@@ -2895,6 +2895,27 @@ export default defineApp(async (sdk) => {
     }
   }
 
+  // ── 契约自检（启动时一次）────────────────────────────────────────────
+  //
+  // 为什么要在注册前跑：工具描述是从 schema 派生的。如果 schema 自己不一致
+  // （参数声明了却没定义、动作没有分支），那种不一致会**直接变成**模型看到的东西，
+  // 而模型不会报错——它只会传错参数，然后回执说"成功"。
+  //
+  // 只记日志，不拦启动：自检的职责是**让你看得见**，不是替你做决定。
+  // 一条自检把整个 App 抬不起来，那是比它想防的错更大的错。
+  try {
+    const sc = selfCheck();
+    if (sc.ok) {
+      log(`契约自检：通过（${actions.length} 个动作 / ${Object.keys(SCHEMA.PARAM_SPEC).length} 个参数定义）`);
+    } else {
+      for (const p of sc.problems) {
+        warn(`契约自检 [${p.kind}] ${p.detail.length} 项：${p.detail.slice(0, 12).join(", ")}`);
+      }
+    }
+  } catch (e) {
+    warn(`契约自检自身出错（不阻断启动）：${msgOf(e)}`);
+  }
+
   try {
     await sdk.tools.register({
       name: TOOL_NAME,
