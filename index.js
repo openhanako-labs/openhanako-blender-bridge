@@ -569,9 +569,73 @@ export default defineApp(async (sdk) => {
     return out;
   }
 
+  // ── 跑 runtime/*.py 模块的 dispatch（唯一实现）──────────────────────────
+  //
+  // 为什么抽这个：nodes / drive / wheel / rig / selftest 五处曾经各自手写同一套模板：
+  //   读 py 源码 → 拼成字符串 → 发 /do → 从 stdout 正则抠 JSON
+  // 四份 40 行近乎逐行相同，只差文件名、回执标记、超时。
+  //
+  // 为什么它重要：下一期要把这几条从 /do 换到 engine 的 preload（带内容指纹的模块注入），
+  // 那时**只改这一个函数**，五个调用点不动。搬四次比搬一次难十倍。
+  //
+  // 为什么不连整数元组那五处（DSH_RESTORE_OK / DSH_MODEL_OK 等）一起抽：
+  //   它们返回的不是 JSON 而是几个整数。强行统一返回形状，
+  //   等于把那五处的解析全部重写——那是平移复杂度，不是消除重复。
+  //   抽公共的前提是「行为不变」，不是「看起来整齐」。
+  //
+  // @param mod       runtime/ 下的模块名
+  // @param op        子动作
+  // @param payload   参数（会被序列化成 Python 字面量）
+  // @param opts
+  //   - tag          回执标记前缀，默认由模块名派生
+  //   - label        回执里的失败前缀（“驱动没有回执”里的“驱动”）
+  //   - timeoutMs    发给 Blender 的超时
+  //   - fetchTimeoutMs  HTTP 等待上限（要大于 timeoutMs，留一点传轮开销）
+  function pyTagOf(mod) {
+    return "DSH_" + String(mod).replace(/\.py$/i, "").replace(/_/g, "_").toUpperCase();
+  }
+
+  async function callPyScript(mod, op, payload, opts = {}) {
+    const tag = opts.tag || pyTagOf(mod);
+    const label = opts.label || mod.replace(/\.py$/i, "");
+    const timeoutMs = Number(opts.timeoutMs) || 60_000;
+    const fetchTimeoutMs = Number(opts.fetchTimeoutMs) || (timeoutMs + 10_000);
+
+    const pyPath = join(import.meta.dirname || ".", "runtime", String(mod));
+    if (!existsSync(pyPath)) {
+      return { ok: false, stage: "missing", error: `${label}模块不在：${pyPath}` };
+    }
+    const src = readFileSync(pyPath, "utf8");
+
+    // 丢掉 undefined：否则 JSON.stringify 会把它们变成 null 送进去，
+    // 而 Python 侧拿到 null 和拿到「没传」是两件事。
+    const clean = {};
+    for (const [k, v] of Object.entries(payload || {})) {
+      if (v !== undefined) clean[k] = v;
+    }
+
+    const code = [
+      src,
+      `_R = dispatch(${JSON.stringify(op)}, ${JSON.stringify(JSON.stringify(clean))})`,
+      `print('${tag} ' + _R)`,
+    ].join("\n");
+
+    const rr = await relayFetch("/do", { code, timeoutMs }, fetchTimeoutMs);
+    const out = String((rr && rr.result && rr.result.result) || "");
+    // 非贪婪到行尾：回执里可能混着别的 stdout，只认最后一个标记
+    const m = new RegExp(tag + " (\\{[\\s\\S]*?\\})\\s*$").exec(out.trim());
+    if (!m) {
+      const tail = (rr && rr.result && (rr.result.error || rr.result.stderr)) || out.slice(-400) || "无回执";
+      return { ok: false, stage: "no-receipt", error: `${label}没有回执：${String(tail).replace(/\s+/g, " ").slice(0, 400)}` };
+    }
+    let res = null;
+    try { res = JSON.parse(m[1]); } catch { res = null; }
+    if (!res) return { ok: false, stage: "bad-json", error: `回执不是合法 JSON：${m[1].slice(0, 300)}` };
+    return { ok: true, res };
+  }
+
   // ── 工具面：一个工具，action 分派 ─────────────────────────────────────────
   const TOOL_NAME = "blender";
-  // ── 工具面：一个工具，action 分派 ─────────────────────────────────────────
   // 接口契约（actions / 参数表 / op 取值 / 提示）与两个派生函数
   // 现在住在 schema.js：它是唯一事实来源，能被测试直接 import，也能被自检读取。
   // 从前这几张表散在本文件里，各自手写、互相平行——新增一个参数要改三处，
@@ -1470,7 +1534,9 @@ export default defineApp(async (sdk) => {
         const op = String(args.op || "recipes");
         const pyPath = join(import.meta.dirname || ".", "runtime", "nodes.py");
         if (!existsSync(pyPath)) return textResult(`节点配方模块不在：${pyPath}`);
-        const pySrc = readFileSync(pyPath, "utf8");
+        // ！这份源码自检分支还要用（它要拼 _PRELOADED_SRC），所以不能交给 callPyScript 读。
+        //   普通分支仍然走 callPyScript——一条路径读两次文件不划算，
+        //   而自检是个位数频率，多读一次无所谓。
 
         // ── 自检 ────────────────────────────────────────────────────────
         // 自检脚本不能靠 stdout 回传：中继回包会混入别的东西，上层还会截断。
@@ -1478,6 +1544,7 @@ export default defineApp(async (sdk) => {
         if (op === "selftest") {
           const tPath = join(import.meta.dirname || ".", "runtime", "_selftest_nodes.py");
           if (!existsSync(tPath)) return textResult(`自检脚本不在：${tPath}`);
+          const pySrc = readFileSync(pyPath, "utf8");
           const tSrc = readFileSync(tPath, "utf8");
           const code = [
             pySrc,
@@ -1506,9 +1573,8 @@ export default defineApp(async (sdk) => {
           return textResult(ls.join("\n"), { details: st });
         }
 
-        // 把参数作为 JSON 字面量嵌进去。
-        // 用 JSON.stringify 而不是手拼：参数里可能有引号、中文、负数。
-        const payload = {
+        // 把参数作为 JSON 字面量嵌进去（callPyScript 内部做）。
+        const got = await callPyScript("nodes.py", op, {
           recipe: args.recipe,
           name: args.name,
           group: args.group,
@@ -1540,28 +1606,9 @@ export default defineApp(async (sdk) => {
           image: args.image,
           uv_scale: args.uv_scale,
           projection: args.projection,
-        };
-        for (const k of Object.keys(payload)) {
-          if (payload[k] === undefined) delete payload[k];
-        }
-
-        const code = [
-          pySrc,
-          `_R = dispatch(${JSON.stringify(op)}, ${JSON.stringify(JSON.stringify(payload))})`,
-          "print('DSH_NODES ' + _R)",
-        ].join("\n");
-
-        const rr = await relayFetch("/do", { code, timeoutMs: 60_000 }, 70_000);
-        const out = String((rr && rr.result && rr.result.result) || "");
-        const m = /DSH_NODES (\{[\s\S]*?\})\s*$/.exec(out.trim());
-        if (!m) {
-          // 没回执时把 stderr / 尾巴一并带出来 —— “未知错误” 比报错本身更费时间
-          const tail = (rr && rr.result && (rr.result.error || rr.result.stderr)) || out.slice(-400) || "无回执";
-          return textResult(`节点操作没有回执：${String(tail).replace(/\s+/g, " ").slice(0, 400)}`);
-        }
-        let res = null;
-        try { res = JSON.parse(m[1]); } catch { res = null; }
-        if (!res) return textResult(`回执不是合法 JSON：${m[1].slice(0, 300)}`);
+        }, { label: "节点操作", tag: "DSH_NODES", timeoutMs: 60_000, fetchTimeoutMs: 70_000 });
+        if (!got.ok) return textResult(got.error);
+        const res = got.res;
         if (res.ok === false) return textResult(`节点操作失败：${res.error || "未知"}`);
 
         const lines = [`节点 · ${op}`];
@@ -1605,11 +1652,11 @@ export default defineApp(async (sdk) => {
         // 而“转一下”是最直接的验证：轴对不对、枢轴点对不对、带不带得动子物体，
         // 看一眼就知道。靠读 JSON 看不出来。
         const op = String(args.op || "status");
-        const dPath = join(import.meta.dirname || ".", "runtime", "motion_drive.py");
-        if (!existsSync(dPath)) return textResult(`驱动模块不在：${dPath}`);
-        const dSrc = readFileSync(dPath, "utf8");
 
-        const payload = {
+        // 先确保 motion 装载了——它的 joints() 是驱动读关节库的唯一来源
+        await relayFetch("/rt/plan", { op: "motion_status", args: {} }, 30_000).catch(() => null);
+
+        const got = await callPyScript("motion_drive.py", op, {
           jid: args.jid || args.joint,
           angle: args.angle,
           unit: args.unit,
@@ -1620,30 +1667,9 @@ export default defineApp(async (sdk) => {
           start: args.start,
           end: args.end,
           steps: args.steps,
-        };
-        for (const k of Object.keys(payload)) {
-          if (payload[k] === undefined) delete payload[k];
-        }
-
-        // 先确保 motion 装载了——它的 joints() 是驱动读关节库的唯一来源
-        await relayFetch("/rt/plan", { op: "motion_status", args: {} }, 30_000).catch(() => null);
-
-        const code = [
-          dSrc,
-          `_R = dispatch(${JSON.stringify(op)}, ${JSON.stringify(JSON.stringify(payload))})`,
-          "print('DSH_DRIVE ' + _R)",
-        ].join("\n");
-
-        const rr = await relayFetch("/do", { code, timeoutMs: 90_000 }, 100_000);
-        const out = String((rr && rr.result && rr.result.result) || "");
-        const mm = /DSH_DRIVE (\{[\s\S]*?\})\s*$/.exec(out.trim());
-        if (!mm) {
-          const tail = (rr && rr.result && (rr.result.error || rr.result.stderr)) || out.slice(-400) || "无回执";
-          return textResult(`驱动没有回执：${String(tail).replace(/\s+/g, " ").slice(0, 400)}`);
-        }
-        let res = null;
-        try { res = JSON.parse(mm[1]); } catch { res = null; }
-        if (!res) return textResult(`回执不是合法 JSON：${mm[1].slice(0, 300)}`);
+        }, { label: "驱动", tag: "DSH_DRIVE", timeoutMs: 90_000, fetchTimeoutMs: 100_000 });
+        if (!got.ok) return textResult(got.error);
+        const res = got.res;
         if (res.ok === false) return textResult(`驱动失败：${res.error || "未知"}`);
 
         const lines = [`关节驱动 · ${op}`];
@@ -1686,11 +1712,8 @@ export default defineApp(async (sdk) => {
         //   而履带根本不是转动——它是**沿一条环路径平移顶点**。用 drive 转履带只会把它转歪。
         //   且轮系要的是**多轴联动**：几个轮子同转速，履带按 r×θ 同步走。
         const op = String(args.op || "status");
-        const wPath = join(import.meta.dirname || ".", "runtime", "motion_wheel.py");
-        if (!existsSync(wPath)) return textResult(`轮系模块不在：${wPath}`);
-        const wSrc = readFileSync(wPath, "utf8");
 
-        const payload = {
+        const got = await callPyScript("motion_wheel.py", op, {
           wheels: args.wheels,
           tracks: args.tracks,
           track: args.track,
@@ -1700,27 +1723,9 @@ export default defineApp(async (sdk) => {
           axis: args.axis,
           pose: args.pose,
           spin_sign: args.spin_sign,
-        };
-        for (const k of Object.keys(payload)) {
-          if (payload[k] === undefined) delete payload[k];
-        }
-
-        const code = [
-          wSrc,
-          `_R = dispatch(${JSON.stringify(op)}, ${JSON.stringify(JSON.stringify(payload))})`,
-          "print('DSH_WHEEL ' + _R)",
-        ].join("\n");
-
-        const rr = await relayFetch("/do", { code, timeoutMs: 90_000 }, 100_000);
-        const out = String((rr && rr.result && rr.result.result) || "");
-        const mm = /DSH_WHEEL (\{[\s\S]*?\})\s*$/.exec(out.trim());
-        if (!mm) {
-          const tail = (rr && rr.result && (rr.result.error || rr.result.stderr)) || out.slice(-400) || "无回执";
-          return textResult(`轮系没有回执：${String(tail).replace(/\s+/g, " ").slice(0, 400)}`);
-        }
-        let res = null;
-        try { res = JSON.parse(mm[1]); } catch { res = null; }
-        if (!res) return textResult(`回执不是合法 JSON：${mm[1].slice(0, 300)}`);
+        }, { label: "轮系", tag: "DSH_WHEEL", timeoutMs: 90_000, fetchTimeoutMs: 100_000 });
+        if (!got.ok) return textResult(got.error);
+        const res = got.res;
         if (res.ok === false) return textResult(`轮系失败：${res.error || "未知"}`);
 
         const lines = [`轮系驱动 · ${op}`];
@@ -1779,11 +1784,8 @@ export default defineApp(async (sdk) => {
         //   骨架动的是**骨骼**，而零件通过权重跟随骨骼。两层机制不一样。
         //   关键差别：drive 能带子孙，骨架靠**骨骼树**带；骨架没树就带不动。
         const op = String(args.op || "status");
-        const gPath = join(import.meta.dirname || ".", "runtime", "motion_rig.py");
-        if (!existsSync(gPath)) return textResult(`骨架模块不在：${gPath}`);
-        const gSrc = readFileSync(gPath, "utf8");
 
-        const payload = {
+        const got = await callPyScript("motion_rig.py", op, {
           // ！name 是全局参数（object/generator 用），别抢。rig 用 rig_name。
           name: args.rig_name || args.armature || "DSH_Rig",
           armature: args.armature,
@@ -1800,27 +1802,9 @@ export default defineApp(async (sdk) => {
           max_influences: args.max_influences,
           out: args.out,
           tracks: args.tracks,
-        };
-        for (const k of Object.keys(payload)) {
-          if (payload[k] === undefined) delete payload[k];
-        }
-
-        const code = [
-          gSrc,
-          `_R = dispatch(${JSON.stringify(op)}, ${JSON.stringify(JSON.stringify(payload))})`,
-          "print('DSH_RIG ' + _R)",
-        ].join("\n");
-
-        const rr = await relayFetch("/do", { code, timeoutMs: 120_000 }, 130_000);
-        const out = String((rr && rr.result && rr.result.result) || "");
-        const mm = /DSH_RIG (\{[\s\S]*?\})\s*$/.exec(out.trim());
-        if (!mm) {
-          const tail = (rr && rr.result && (rr.result.error || rr.result.stderr)) || out.slice(-400) || "无回执";
-          return textResult(`骨架没有回执：${String(tail).replace(/\s+/g, " ").slice(0, 400)}`);
-        }
-        let res = null;
-        try { res = JSON.parse(mm[1]); } catch { res = null; }
-        if (!res) return textResult(`回执不是合法 JSON：${mm[1].slice(0, 300)}`);
+        }, { label: "骨架", tag: "DSH_RIG", timeoutMs: 120_000, fetchTimeoutMs: 130_000 });
+        if (!got.ok) return textResult(got.error);
+        const res = got.res;
         if (res.ok === false) return textResult(`骨架失败：${res.error || "未知"}`);
 
         const lines = [`骨架 · ${op}`];
