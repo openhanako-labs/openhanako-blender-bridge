@@ -1420,6 +1420,37 @@ function authorized(req) {
   return req.headers["x-relay-key"] === CONTROL_KEY;
 }
 
+// ── 免鉴权的只读面 ────────────────────────────────────────────────────────
+//
+// 为何需要它：controlKey 每次启动随机生成、写完就删，只活在进程内存。
+//   于是外部工具（调试脚本、CI、修问题的终端）**没有任何稳定方式接入**——
+//   实测：想直连查一个场景状态，只能从命令行里找到配置路径，而文件已不存在。
+//   安全是对的，但不该把“读一下现状”也一起关死。
+//
+// 为何用白名单而不是“按 op 判读写”：
+//   按 op 判需要先读 body，而 body 只能读一次——鉴权层读过了路由就读不到。
+//   更根本的是：**白名单漏了只是少一个入口，黑名单漏了是开一个口子。**
+//
+// 为何这些路径能无条件信任：
+//   它们都不接受“要做什么”这个参数，只接受“读哪个”。
+//   对比：/rt/plan 也支持只读 op，但它同时支持会改场景的 op——
+//   路径本身分不出读写，所以不放进免鉴权面。
+const PUBLIC_READ_PATHS = new Set([
+  "/health",          // 进程与连接状态
+  "/doctor",          // 三级探测（ping → addon → bpy），不改任何东西
+  "/scene",           // 读场景结构
+  "/object",          // 读单个物体
+  "/rt/commands",     // 列 addon 命令面
+  "/rt/capabilities", // 列能力与指标
+  "/rt/who",          // 看谁持锁（多会话共存时先看它）
+]);
+
+function isPublicRead(path, method) {
+  if (path === "/health") return true;          // GET 为主，不限制方法
+  if (!PUBLIC_READ_PATHS.has(path)) return false;
+  return method === "POST";                      // 其余统一 POST
+}
+
 const server = http.createServer(async (req, res) => {
   let url;
   try {
@@ -1438,11 +1469,19 @@ const server = http.createServer(async (req, res) => {
       workDir: WORK,
       metrics,
       lastError: lastError || null,
+      // 公告“哪些路径不需要 key”。
+      // 为何要明写在回执里：否则外部工具得靠猜——而猜错的代价是 403，
+      //   它分不清“路径不对”和“没权限”。这两个是不同的事。
+      publicRead: [...PUBLIC_READ_PATHS],
+      authNote: "其余路径需要 x-relay-key 头；key 只在宿主进程内存里，不落盘。",
     });
   }
-
-  if (!authorized(req)) {
-    return jsonReply(res, 403, { ok: false, error: "unauthorized" });
+  if (!isPublicRead(path, req.method) && !authorized(req)) {
+    return jsonReply(res, 403, {
+      ok: false,
+      error: "unauthorized",
+      hint: `这条路径需要 x-relay-key。免鉴权的只读路径：${[...PUBLIC_READ_PATHS].join(" / ")}`,
+    });
   }
 
   try {

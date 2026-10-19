@@ -40,7 +40,7 @@
     },
     {
       id: "status",
-      summary: "本 App 与中继的运行状态（含中继侧健康与指标）。",
+      summary: "本 App 与中继的运行状态（含中继侧健康与指标）。回执里的 health.publicRead 列出中继上**不需 key 就能读**的路径——外部脚本、CI、排查终端靠它接入；其余路径都要 x-relay-key（key 只在宿主内存，不落盘）。",
     },
     {
       id: "channel",
