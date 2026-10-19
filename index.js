@@ -1024,7 +1024,22 @@ export default defineApp(async (sdk) => {
   // 归档提示语。统一说法，免得每个分支各写一句
   function archiveNote(a) {
     if (!a) return "- 归档：无（没找到可收的产物）";
-    return `- 归档：${a.created ? "新建" : "续入"} run ${a.id}（${a.rel.length} 个）· runs op=tag id=${a.id} tag=baseline 可标基线`;
+    // ！这一行曾经写成：
+    //     `- 归档：新建 run X（N 个）· runs op=tag id=X tag=baseline 可标基线`
+    //   而实际上**什么都没标**（tag 仍是 null）。
+    //   它被误读成“已经标为 baseline”——实测：我自己就把它当成了
+    //   “8 个半成品被永久保留”，直到去翻 run.json 才发现全是 null。
+    //
+    // 为何会误读：命令式参数（tag=baseline）与中文说明（可标基线）挤在同一行，
+    //   前半截长得像执行记录，后半截只是个提醒。两者视觉上没有分界。
+    //
+    // 现在：把“已做的”和“可选的”分成两行，且后者明确写成建议句式。
+    //   一条回执只说它真正做了什么。
+    const head = `- 归档：${a.created ? "新建" : "续入"} run ${a.id}（${a.rel.length} 个）`;
+    const hint = a.created
+      ? `  · 这是新的一版，未标记。认为可交付时执行：runs op=tag id=${a.id} tag=baseline`
+      : "";
+    return hint ? `${head}\n${hint}` : head;
   }
 
   // ── 派活（唯一实现）────────────────────────────────────────────────────────
@@ -1267,9 +1282,31 @@ export default defineApp(async (sdk) => {
           `- 落盘：${meta.path || "-"}`,
         ];
         if (meta.bytes) lines.push(`- 字节：${meta.bytes}`);
-        // 单视角也归档：不然四张视角图各自孤立，看不出是同一批
+
+        // 单视角也归档：不然四张视角图各自孤立，看不出是同一批。
+        //
+        // ！为何需要 continueRun：
+        //   原先只有 runId 显式传入才续入，而不传就**新建一版**。
+        //   而模型每次出图自然不知道上一版的 id——于是“同一台机器的 8 次迭代”
+        //   变成了 8 个各含 1 张图的 run（实测）。
+        //   那不只是目录碎，而是把“一次迭代 = 一版”这个语义破坏了：
+        //   人后来想找“那台机箱的最后一版”时，没有一版是可点的。
+        //
+        // 但也不能默认续入：有时就是要开新的一版（换模型、换方案）。
+        // 所以给一个显式开关，并在回执里把“续入哪一版”说出来。
+        let resumeId = args.runId || null;
+        if (!resumeId && args.continueRun === true && state.runs) {
+          const list = state.runs.list ? state.runs.list() : [];
+          // 只续入“上一版”，不猜更早的——猜错比新建更糟。
+          const last = list && list.length ? list[0] : null;
+          if (last && last.id) {
+            resumeId = last.id;
+            lines.push(`- 续入上一版：${last.id}`);
+          }
+        }
+
         const arc = autoArchive({
-          runId: args.runId || null,
+          runId: resumeId,
           label: args.label || "视角",
           action: "view",
           items: meta.path ? [{ from: meta.path, kind: args.hero ? "hero" : "view", name: args.name || null }] : [],
