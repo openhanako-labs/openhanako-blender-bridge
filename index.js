@@ -1388,7 +1388,10 @@ export default defineApp(async (sdk) => {
 
       case "plan": {
         const op = String(args.op || "status");
-        const r = await relayFetch("/rt/plan", { op, args: args.args || {} }, 180_000);
+        // fit_help / mate_check 的参数可以顶层传（feature, fit, nominal, tol_mm），
+        // 也可以嵌套进 args。合并成一份传给 relay。
+        const planArgs = { ...(args.args || {}), ...(args.feature ? { feature: args.feature } : {}), ...(args.fit ? { fit: args.fit } : {}), ...(args.nominal != null ? { nominal: args.nominal } : {}), ...(args.tol_mm != null ? { tol_mm: args.tol_mm } : {}), ...(args.d != null ? { d: args.d } : {}), ...(args.m != null ? { m: args.m } : {}), ...(args.conn_id ? { conn_id: args.conn_id } : {}) };
+        const r = await relayFetch("/rt/plan", { op, args: planArgs }, 180_000);
         const res = r.result || {};
         if (res && res.ok === false && res.error) return textResult(`契约层 ${op} 失败：${res.error}`);
 
@@ -1412,6 +1415,56 @@ export default defineApp(async (sdk) => {
           if (res.needs_probe) lines.push(`- 还需要探针：${res.needs_probe}`);
         } else if (op === "flip") {
           lines.push(`- 已翻转到：${res.to || "?"}｜${res.why ? String(res.why).slice(0, 100) : ""}`);
+        } else if (op === "fit_help") {
+          // 装配特征库速查。
+          //
+          // 为何做进 plan 而不是另开动作：它读的就是上游 contract.py 里的
+          //   c_fit_help()，本质是「查数据表」。放进 plan 让模型一次调用就能拿到
+          //   公差值 + Blender 侧造法，不用自己翻 JSON。
+          //
+          // 无参数时返回全量索引（9 种特征 + 四档公差 + ISO 273）；
+          // 传 feature / d / m 时返回对应特征的造法或螺纹间隙孔计算。
+          if (res.features_index) {
+            lines.push(`- 特征库：${res.features_index.length} 种｜单位：${res.units || "mm"}`);
+            for (const f of res.features_index) {
+              lines.push(`  · ${f.name}（${f.cn}）→ 配 ${f.pairs_with || "—"}`);
+            }
+            lines.push(`- 默认公差档：${res.fit_default_cls || "location"}`);
+          }
+          if (res.iso273_query) {
+            const q = res.iso273_query;
+            lines.push(`- ISO 273 M${q.m} → 间隙孔 ${q.clearance_diameter_mm} mm`);
+          }
+          if (res.d_query) {
+            const q = res.d_query;
+            lines.push(`- 特征 ${q.feature || "?"}（${q.kind || "?"}）`);
+            lines.push(`  孔径 = ${q.hole_diameter_mm != null ? q.hole_diameter_mm + " mm" : "—"}｜销径 = ${q.pin_diameter_mm != null ? q.pin_diameter_mm + " mm" : "—"}`);
+            lines.push(`  Blender：${q.blender || "—"}`);
+          }
+          if (res.fit_default_cls && !res.features_index) {
+            lines.push(`- 默认公差档：${res.fit_default_cls}`);
+          }
+        } else if (op === "mate_check") {
+          // 配合门：量实际网格上的接触 / 间隙 / 侵入，按 fit 档判三态。
+          //
+          // 判据逻辑在上游 contract.py 的 c_mate_check()，这里只做可读摘要。
+          //
+          // 三态含义：supported=配合正常 / refuted=不达标 / unresolved=证据不足
+          //   （unresolved 是一等状态，不二选一）
+          const v = res.verdict || res.status || "?";
+          const vIcon = v === "supported" ? "✅" : v === "refuted" ? "❌" : "⚠️";
+          lines.push(`- 判定：${vIcon} **${v}**`);
+          if (res.connection_id) lines.push(`- 连接：${res.connection_id}`);
+          if (res.fit) lines.push(`- 公差档：${res.fit}`);
+          if (res.nominal != null) lines.push(`- 标称间隙：${res.nominal} mm`);
+          if (res.measured != null) lines.push(`- 实测间隙：${res.measured} mm`);
+          if (res.tol_mm != null) lines.push(`- 允许偏差：±${res.tol_mm} mm`);
+          if (res.contact_pct != null) lines.push(`- 接触占比：${res.contact_pct}%`);
+          if (res.pen != null) lines.push(`- 侵入深度：${res.pen} mm`);
+          if (res.why) {
+            const why = Array.isArray(res.why) ? res.why : [res.why];
+            for (const w of why.slice(0, 5)) lines.push(`  · ${String(w).slice(0, 120)}`);
+          }
         } else if (String(op).startsWith("generator")) {
           if (op === "generator_list") {
             lines.push(`- 注册表：${res.count ?? 0} 个生成器｜目录：${res.root || "-"}`);
