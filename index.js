@@ -1498,6 +1498,138 @@ export default defineApp(async (sdk) => {
 
       case "audit": {
         const op = String(args.op || "scene");
+
+        // ── op=collide：零件之间的干涉检查 ───────────────────────────
+        //
+        // 为何归入 audit 而不另开一个动作：它就是一个“检查”，
+        //   与其他 audit op 同类；另开一个动作会让模型多猜一次“该用哪个”。
+        //   但它与 audit_* 有一个本质区别：
+        //   上游的 audit_* 查的是**单个网格自身的拓扑**
+        //   （孤立顶点、非流形边、退化面），而零件之间互相穿模时它一无所知。
+        //   实测：主板建成 0.3×0.3 的竖板横在机箱里、把显卡全挡住，audit 一项没报。
+        //   而这类错在装配体建模里是最常见的一类。
+        //
+        // 为何用包围盒而不是引擎层碰撞：
+        //   初期排查要的是“哪两个零件占到了同一块空间”，包围盒就够，
+        //   而且不依赖物理引擎。面级精细问题交给 audit 的非流形/自相交。
+        //
+        // ！判据的关键：相交 ≠ 错。
+        //   风扇装在外壳上、螺丝装在孔里，都是合理相交。
+        //   所以只对三类东西发话：体积重叠（且不在白名单）、
+        //   一个包住另一个（多半尺寸弄反）、越出整体包围盒（多半坐标错）。
+        //   轻碰不报——装配体里到处是轻碰，报了就是噪声。
+        if (op === "collide") {
+          const allow = Array.isArray(args.allow) ? args.allow.map(String) : [];
+          const eps = Number(args.eps ?? 0.0005);
+          const maxPairs = Number(args.maxPairs ?? 60);
+          const code = [
+            "import bpy, itertools, json",
+            "from mathutils import Vector",
+            "def _bb(o):",
+            "    lo = Vector((1e18,)*3); hi = Vector((-1e18,)*3)",
+            "    for c in o.bound_box:",
+            "        w = o.matrix_world @ Vector(c)",
+            "        for i in range(3):",
+            "            lo[i]=min(lo[i],w[i]); hi[i]=max(hi[i],w[i])",
+            "    return lo,hi",
+            "objs = [o for o in bpy.context.scene.objects if o.type=='MESH' and not o.hide_viewport]",
+            "bb = {o.name: _bb(o) for o in objs}",
+            "EPS = " + JSON.stringify(eps),
+            "ALLOW = set(" + JSON.stringify(allow) + ")",
+            "def allowed(a, b):",
+            "    return (a in ALLOW) or (b in ALLOW) or ((a + '|' + b) in ALLOW) or ((b + '|' + a) in ALLOW)",
+            "hits = []",
+            "for a, b in itertools.combinations(sorted(bb), 2):",
+            "    la, ha = bb[a]; lb, hb = bb[b]",
+            "    d = [min(ha[i], hb[i]) - max(la[i], lb[i]) for i in range(3)]",
+            "    if not all(v > EPS for v in d):",
+            "        continue",
+            "    da = [ha[i]-la[i] for i in range(3)]",
+            "    db = [hb[i]-lb[i] for i in range(3)]",
+            "    contains = all((da[i] >= db[i] - EPS) for i in range(3)) or all((db[i] >= da[i] - EPS) for i in range(3))",
+            "    # ！拼缝与真干涉的区别不在体积，在**形状**：",
+            "    #     两块板贴在一起 → 重叠区又薄又长（最小边很小）",
+            "    #     真正的穿模     → 重叠区在三个方向上都有厚度",
+            "    #   实测：机箱六面拼缝的重叠体积高达 12800 mm³，",
+            "    #   而它能被看穿的全部特征就是“有一条边只有 8mm”。",
+            "    #   所以判据取“最小重叠边”，不取体积。",
+            "    thin_mm = round(min(d)*1000, 2)",
+            "    hits.append({'a': a, 'b': b, 'overlap_mm': [round(v*1000, 2) for v in d],",
+            "                 'vol_mm3': round(d[0]*d[1]*d[2]*1e9, 1), 'thinnest_mm': thin_mm,",
+            "                 'flat_a': round(min(da)*1000, 2), 'flat_b': round(min(db)*1000, 2),",
+            "                 'contains': contains, 'allowed': allowed(a, b)})",
+            "hits.sort(key=lambda h: -h['vol_mm3'])",
+            "print('DSH_COLLIDE ' + json.dumps({",
+            "    'ok': True, 'objects': len(objs), 'pairs': len(hits),",
+            "    'blocking': [h for h in hits if not h['allowed']][:" + JSON.stringify(maxPairs) + "],",
+            "}, ensure_ascii=False))",
+          ].join("\n");
+
+          const rr = await relayFetch("/do", { code, timeoutMs: 120_000 }, 130_000);
+          const out = String((rr && rr.result && rr.result.result) || "");
+          const m = /DSH_COLLIDE (\{[\s\S]*\})\s*$/.exec(out.trim());
+          if (!m) {
+            const tail = (rr && rr.result && (rr.result.error || rr.result.stderr)) || out.slice(-300) || "无回执";
+            return textResult(`干涉检查没有回执：${String(tail).replace(/\s+/g, " ").slice(0, 300)}`);
+          }
+          let cres = null;
+          try { cres = JSON.parse(m[1]); } catch { cres = null; }
+          if (!cres) return textResult(`回执不是合法 JSON：${m[1].slice(0, 250)}`);
+
+          const blocking = cres.blocking || [];
+          const clines = [`零件干涉 · ${cres.objects} 个网格 · ${cres.pairs} 处相交`];
+          // ！不要把所有相交都列出来。
+          //   实测：一个六面板拼成的机箱，13 处相交里 12 处是**板与板的正常拼缝**——
+          //   而那种拼缝在装配体里到处都是。全列出来就是噪声，
+          //   真问题（电源捅穿后板）会被埋在中间。
+          //
+          // 所以分两档：
+          //   拦截（blocking）：体积重叠超过阈值，或者一个包住另一个
+          //   剥蚀（grazing）：只重叠一点点，大多是拼缝 / 装配接触
+          // 默认只报拦截，剥蚀只在显式要求时列。
+          const skipGrazing = args.grazing !== true;
+          // ── 拼缝的判据（第二版，第一版是错的）──
+          //
+          // 第一版取“重叠区最小边≤12mm 就是拼缝”。结果把真的问题也滤掉了：
+          //   电源捅穿后板 → 重叠 140×3×80，最薄 3mm → 被当成拼缝。
+          //
+          // 真正的区别不在重叠多薄，而在**哪两个东西重叠**：
+          //   拼缝 = 两块板在对方的**厚度方向**上重叠（板与板互相搭一截）
+          //   穿模 = 一个实体捅进了另一个实体
+          //
+          // 所以看两个零件自身的最薄边：
+          //   两者都是薄壳（最小边≤板厚量级）→ 很可能是拼缝
+          //   其中一个是厚实体（三个方向都有体量）→ 那是真穿模
+          //
+          // 这才是“看形状”而不是“看重叠多少”。
+          const plateMm = Number(args.seamMm ?? 12);
+          const isSeam = (h) => {
+            if (h.contains) return false;             // 包含绝不归为拼缝
+            const aFlat = h.flat_a <= plateMm;        // a 是薄壳
+            const bFlat = h.flat_b <= plateMm;        // b 是薄壳
+            return aFlat && bFlat;                    // 两个都是薄壳才算拼缝
+          };
+          const shown = blocking.filter((h) => !skipGrazing || !isSeam(h));
+          const grazing = blocking.length - shown.length;
+
+          if (!shown.length) {
+            clines.push(`- 无需要处理的干涉`);
+            if (grazing > 0) clines.push(`  （另有 ${grazing} 处极轻重叠/拼缝，两个零件都是薄壳，不视为干涉；要看得传 grazing:true）`);
+          } else {
+            clines.push(`- 需要处理 ${shown.length} 处：`);
+            for (const h of shown.slice(0, 20)) {
+              const tag = h.contains ? "｜一个包住了另一个，多半尺寸弄反" : "";
+              clines.push(`  · ${h.a} × ${h.b}：重叠 ${h.overlap_mm.join("×")} mm（最薄 ${h.thinnest_mm}mm），${h.vol_mm3} mm³${tag}`);
+            }
+            if (shown.length > 20) clines.push(`  …另有 ${shown.length - 20} 处`);
+            if (grazing > 0) clines.push(`  （已过滤 ${grazing} 处拼缝/模触，两个零件都是薄壳）`);
+          }
+          clines.push("", "判定规则：相交不等于错。拼缝和装配接触是正常的；" +
+            "真正的干涉是“占同一块空间且体积可观”，或“一个包住了另一个”。" +
+            "对合理的装配接触，用 allow 参数指名它（写 'A|B' 或单个名字），它们就不会再报。");
+          return textResult(clines.join("\n"), { details: cres });
+        }
+
         const r = await relayFetch("/rt/plan", { op: "audit_" + op, args: args.args || {} }, 300_000);
         const res = r.result || {};
         if (res.ok === false && res.error) return textResult(`体检 ${op} 失败：${res.error}`);
@@ -2437,15 +2569,41 @@ export default defineApp(async (sdk) => {
       }
 
       case "see": {
-        const r = await relayFetch("/see", {
+        // ！这里曾经是直接拍当前视口，而工具描述写着“自动取景”。
+        //   两者不一致，而**模型读到的是描述**——它会以为拍到的就是该看到的。
+        //   实测：建完一台 21 厘米宽的机箱，see 拍回来一片空白，
+        //   因为相机停在 9.5 米外（上一个场景留下的）。零件全在，图里没有。
+        //
+        // 为何不直接改成“总是取景”：
+        //   拍当前视口是**合理需求**——人在 Blender 里调好了角度，想让模型看一眼。
+        //   无条件取景会把他的角度抢掉。所以：
+        //     · fit 未给 → 自动取景（与描述一致）
+        //     · fit:false → 拍当前视口（原有行为，保留）
+        //     · angle:xxx → 先转到那个方位再拍
+        //
+        // 实现走 captureViewImpl（模块级出口）：取景、截图、还原都在那里，
+        // 而且它已经处理了“用户的视口要放回去”。不要在这里另写一份。
+        if (!captureViewImpl) {
+          return textResult("取景器未就绪（路由未注册完成）。稍后重试，或用 view 指定 from/look_at。");
+        }
+
+        const ang = String(args.view || "").toLowerCase();
+        const wantFit = args.fit !== false;
+        // 浏览器里没有“当前视口”这个概念，但 here 的判断不能依赖 VIEW_ANGLES（它在回调作用域）。
+        // 所以只传 angle（可为空）；空值 + wantFit 由调用方决定含义。
+        const out = await captureViewImpl({
+          angle: ang || (wantFit ? "iso" : null),
           maxSize: Number(args.maxSize || 900),
           file: args.file,
-          timeoutMs: timeoutMs || 30_000,
-        }, 30_000);
-        if (!r.ok) return textResult(`取景失败：${r.error}`);
-        const content = [{ type: "text", text: `视口截图已就绪（${r.bytes || 0} bytes）：${r.file}` }];
-        if (r.image) content.push({ type: "image", data: r.image, mimeType: r.mimeType || "image/png" });
-        if (r.imageTooBig) content.push({ type: "text", text: "图片超过 8MB 未内联，请直接读取上面的文件路径。" });
+          noCache: args.fit !== false ? true : false,
+        });
+
+        if (!out || out.ok === false) {
+          return textResult(`取景失败：${(out && out.error) || "未知"}`);
+        }
+        const content = [{ type: "text", text: `视口截图已就绪（${out.bytes || 0} bytes）：${out.file}${out.cached ? "（命中缓存）" : ""}${out.angle ? "｜方位 " + out.angle : "｜当前视口"}` }];
+        if (out.image) content.push({ type: "image", data: out.image, mimeType: out.mimeType || "image/png" });
+        if (out.imageTooBig) content.push({ type: "text", text: "图片超过 8MB 未内联，请直接读取上面的文件路径。" });
         return { content };
       }
 
@@ -3689,6 +3847,12 @@ export default defineApp(async (sdk) => {
             return { ok: false, error: "转视角失败：" + (fit.error || "未知") };
           }
           fitSnapshot = parseSnap(fit && fit.result && fit.result.result);
+          // ！调试留痕：取景快照解析不出来时，还原就静默失效了——
+          //   而失效的表现是“用户的视角被改动且不还”，很难一眼看出是哪步。
+          //   这里只写日志，不改行为。
+          if (!fitSnapshot) {
+            warn(`取景快照解析失败（方位 ${ang}）：${String(fit && fit.result && fit.result.result).slice(0, 160)}`);
+          }
         }
 
         let r;
