@@ -2887,11 +2887,24 @@ export default defineApp(async (sdk) => {
         } else if (op === "trash_list") {
           const objs = res.objects || [];
           lines.push(objs.length ? `回收站（${objs.length} 个）：${objs.join("、")}` : "回收站是空的");
+        } else if (op === "hide" || op === "show") {
+          const done = res.done || [];
+          const miss = res.missing || [];
+          const verb = op === "hide" ? "已隐藏" : "已显示";
+          lines.push(done.length ? `${verb}：${done.join("、")}` : "没有可操作的物体");
+          if (miss.length) lines.push(`- 没找到：${miss.join("、")}`);
+          // 回执带当前可见数：隐藏最容易“好像生效了”，得给一个能对着数的量
+          if (res.visible != null) lines.push(`- 当前可见网格：${res.visible} 个`);
+          const nowHidden = res.hidden || [];
+          if (nowHidden.length) lines.push(`- 当前处于隐藏：${nowHidden.length} 个（${nowHidden.slice(0, 8).join("、")}${nowHidden.length > 8 ? " …" : ""}）`);
+        } else if (op === "hidden_list") {
+          const hid = res.hidden || [];
+          lines.push(hid.length ? `隐藏中（${hid.length} 个）：${hid.join("、")}` : "没有隐藏的物体");
         } else if (op === "purge") {
           lines.push(`已真删回收站里的 ${res.purged ?? 0} 个物体（不可恢复）`);
         }
         // 改了场景就顺手记一笔，让“谁改的”有落点
-        if (["add", "remove", "restore", "rename", "duplicate", "purge"].includes(op)) {
+        if (["add", "remove", "restore", "rename", "duplicate", "purge", "hide", "show"].includes(op)) {
           const arc = autoArchive({
             runId: args.runId || null,
             label: args.label || `物体 · ${op}`,
@@ -3626,7 +3639,7 @@ export default defineApp(async (sdk) => {
       // 取景公式的版本。改了公式就得加一——否则旧缓存的图会被当成“已经算过”，
       // 用户点一下看到的是旧公式的成果，看着像没修。
       // 这比“手动去删几个文件”可靠：下次改公式同样自动失效。
-      const FRAMING_VER = "f3";
+      const FRAMING_VER = "f4";
 
       // ── 视角 ──
       // 关键：截图（addon 的 get_viewport_screenshot）拍的是 **3D 视口**，
@@ -3651,7 +3664,20 @@ export default defineApp(async (sdk) => {
       // 实测用户视口 2100×1202（比 1.747）——宽的。
       // 只拿一个径向半径去乘常数，结果是竖向恰好、横向一大片空。
       // 正确的做法：把包围盒顶点投到屏幕的两个轴上，分别算需要的半宽/半高。
-      function buildViewCode(dir) {
+      function buildViewCode(dir, opts = {}) {
+        // !align 是“要不要把构图转正”（主轴分析）。
+        //
+        // 为何不能总是转正（曾经的写法）：
+        //   实测：请求 right 视图，拿到的是斜的。
+        //   查取景后的四元数：屏幕“上”是 (-0.408, 0.180, 0.895)——不是世界 +Z。
+        //   因为主轴分析会绕视线旋转，好让模型的长边沿屏幕水平方向摆满。
+        //   对 iso 合理（它本来就没唯一的“上”），
+        //   但 front / right / top 的“上”是有定义的——
+        //   右视图就该向上，俯视图就该北朝上。把它们转正就是拍错了。
+        //
+        // 所以：具名正交方位 align=false（用基准向量建基，上永远是 +Z），
+        //   iso / 自定义方向 align=true（需要摆满画面）。
+        const align = opts.align !== false;
         return [
           "import bpy, math",
           "from mathutils import Vector",
@@ -3694,14 +3720,20 @@ export default defineApp(async (sdk) => {
           "        uv.append((v.dot(_e1), v.dot(_e2)))",
           "    # 主轴分析：找出投影轮廓最长的方向。",
           "    # 不这做的话，俯视时坦克的长轴会竖着摆在宽屏里——实测横向只用 18%。",
-          "    mx = sum(u for u, v in uv) / len(uv)",
-          "    my = sum(v for u, v in uv) / len(uv)",
-          "    sxx = sum((u-mx)*(u-mx) for u, v in uv) / len(uv)",
-          "    syy = sum((v-my)*(v-my) for u, v in uv) / len(uv)",
-          "    sxy = sum((u-mx)*(v-my) for u, v in uv) / len(uv)",
-          "    theta = 0.5 * math.atan2(2*sxy, sxx-syy)",
-          "    ca, sa = math.cos(theta), math.sin(theta)",
-          "    _r = (_e1 * ca + _e2 * sa).normalized()",
+          // !align=false 时跳过这一段：用 _e1/_e2 直接建基。
+          //   _e1 = up × dir（屏幕水平），_e2 = dir × _e1（屏幕上）——
+          //   这是标准相机基，上就是上。
+          "    if " + (align ? "True" : "False") + ":",
+          "        mx = sum(u for u, v in uv) / len(uv)",
+          "        my = sum(v for u, v in uv) / len(uv)",
+          "        sxx = sum((u-mx)*(u-mx) for u, v in uv) / len(uv)",
+          "        syy = sum((v-my)*(v-my) for u, v in uv) / len(uv)",
+          "        sxy = sum((u-mx)*(v-my) for u, v in uv) / len(uv)",
+          "        theta = 0.5 * math.atan2(2*sxy, sxx-syy)",
+          "        ca, sa = math.cos(theta), math.sin(theta)",
+          "        _r = (_e1 * ca + _e2 * sa).normalized()",
+          "    else:",
+          "        _r = _e1.normalized()",
           "    _u = _d.cross(_r).normalized()",
           "    # 按投影包围盒的极值算半宽/半高，不是从均值点量 |max|。",
           "    # 包围盒角点的均值不等于视觉中心（128 个零件大小悬殊），",
@@ -3840,7 +3872,7 @@ export default defineApp(async (sdk) => {
         let fitSnapshot = null;
         if (ang && VIEW_ANGLES[ang]) {
           const fit = await relayFetch("/do", {
-            code: buildViewCode(VIEW_ANGLES[ang]),
+            code: buildViewCode(VIEW_ANGLES[ang], { align: ang === "iso" }),
             timeoutMs: 30_000,
           }, 40_000);
           if (fit && fit.ok === false) {

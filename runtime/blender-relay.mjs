@@ -155,7 +155,7 @@ const READ_ONLY_OPS = {
   "/rt/txn": ["list", "marks", "help", "edit_status"],
   "/rt/preset": ["list", "get", "help"],
   "/rt/job": ["status", "collect", "list"],
-  "/object/edit": ["trash_list"],
+  "/object/edit": ["trash_list", "hidden_list"],
 };
 
 function isReadOnlyOp(path, op) {
@@ -594,6 +594,45 @@ function objectEditCode(op, p) {
     L.push(`    _root.objects.link(_ob)`);
     L.push(`    _done.append(_n)`);
     L.push(`_out = {"restored": _done, "missing": _miss}`);
+  } else if (op === "hide" || op === "show") {
+    // 隐藏 / 显示。
+    //
+    // 为何要单独一个 op 而不是用 do 跑一段 bpy：
+    //   隐藏/显示是装配体建模里最高频的操作（拍内部、做爆炸图、分部件看）。
+    //   而“用 do 绕过”意味着没归档、没回执、没撤销点——
+    //   而且每个人每次都要自己拼同一段 Python，拼错不会报错，只会静默地没生效。
+    //
+    // 为何不用 collection 做（像 remove 那样）：
+    //   隐藏是**状态**，不是位置。把物体挪进隐藏 collection，
+    //   等于用“换个地方”去模拟“看不见”——于是父级关系、修改器引用、
+    //   驱动表达式都会被意外断掉。而 viewport/render 开关就是干这个的。
+    //
+    // 三对开关都要动：只改 hide_viewport 的话，
+    //   视口里看不见了、渲染却还出来——那是最坑人的一种“好像生效了”。
+    const names = Array.isArray(p.names) ? p.names : (p.name ? [p.name] : []);
+    if (!names.length) throw new Error("names 不能为空");
+    const on = op === "hide";
+    L.push(`_names = ${q(names.map(String))}`);
+    L.push(`_target = ${on ? "True" : "False"}`);
+    L.push(`_done = []`, `_miss = []`);
+    L.push(`for _n in _names:`);
+    L.push(`    _ob = bpy.data.objects.get(_n)`);
+    L.push(`    if _ob is None:`);
+    L.push(`        _miss.append(_n); continue`);
+    // hide_viewport 作用于物体（仅视口），hide_set 作用于视图图层（包括渲染预览）
+    L.push(`    _ob.hide_viewport = _target`);
+    L.push(`    _ob.hide_render = _target`);
+    L.push(`    _done.append(_n)`);
+    // 回执带“现在还剩几件可见”，否则只能靠人眼确认
+    L.push(`_vis = [o.name for o in bpy.context.scene.objects if o.type == 'MESH' and not o.hide_viewport]`);
+    L.push(`_hid = [o.name for o in bpy.context.scene.objects if o.type == 'MESH' and o.hide_viewport]`);
+    L.push(`_out = {"op": ${q(op)}, "done": _done, "missing": _miss, "visible": len(_vis), "hidden": _hid}`);
+  } else if (op === "hidden_list") {
+    // 列出当前藏起来的。
+    // 为何要它：隐藏是“看不见”的状态，而**看不见的东西最容易被忘掉**。
+    // 没有这个，人会以为“模型怎么少了件”而不知道是自己昨天藏的。
+    L.push(`_hid = [o.name for o in bpy.context.scene.objects if o.hide_viewport or o.hide_render]`);
+    L.push(`_out = {"hidden": _hid, "count": len(_hid)}`);
   } else if (op === "rename") {
     if (!p.name) throw new Error("name 必填");
     if (!p.to) throw new Error("to 必填（新名字）");
@@ -665,7 +704,7 @@ function unwrapAddonResult(res) {
 
 async function objectEdit(body) {
   const op = String(body.op || "");
-  if (!op) throw new Error("op 必填（add / remove / restore / rename / duplicate / trash_list / purge）");
+  if (!op) throw new Error("op 必填（add / remove / restore / hide / show / hidden_list / rename / duplicate / trash_list / purge）");
   const code = objectEditCode(op, body);
   const res = await send("execute_code", { code }, Number(body.timeoutMs || 60_000));
   const parsed = unwrapAddonResult(res);

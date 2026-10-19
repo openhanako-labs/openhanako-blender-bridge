@@ -379,7 +379,7 @@
     runs: "begin / put / finish / tag / feedback / get / list / prune / views / model / scene / snapshot / snapshots / restore / help",
     preset: "save / list / get / delete / apply / export / import / help",
     service: "status / start / stop",
-    object: "get（读单个物体，默认）/ add（新建基础体：cube/sphere/cylinder/cone/torus/plane/monkey）/ remove（移入回收站，可恢复）/ restore（从回收站捞回）/ rename / duplicate / trash_list / purge（真删回收站，不可恢复）",
+    object: "get（读单个物体，默认）/ add（新建基础体：cube/sphere/cylinder/cone/torus/plane/monkey）/ hide（隐藏，视口与渲染同时关）/ show（重新显示）/ hidden_list（列出当前藏起来的）/ remove（移入回收站，可恢复）/ restore（从回收站捞回）/ rename / duplicate / trash_list / purge（真删回收站，不可恢复）",
     lease: "who / acquire / release / renew",
     models: "agents / models",
     worker: "start / exec / status / stop / restart",
