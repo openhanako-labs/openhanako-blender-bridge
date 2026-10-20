@@ -59,6 +59,30 @@ App 要连的是 Blender 里的一个 addon（开源项目 `ahujasid/mcp-for-ble
 
 ---
 
+## 四、想直接打端点验证？
+
+中继开了一条**免鉴权只读面**（`/health`、`/preview` 等八条），不用 key 就能调，适合卡片或脚本自己取图。完整清单、以及「端口怎么找」这个坑，见 `README.md` 的 **「中继 HTTP 面」** 一节。
+
+最短的一条验证：
+
+```powershell
+# 1) 找中继端口（它是动态的，别读配置文件）
+$ns = Get-Process hana-server
+$port = foreach ($p in $ns) {
+  $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$($p.Id)").CommandLine
+  if ($cmd -match 'blender-relay') {
+    (Get-NetTCPConnection -OwningProcess $p.Id -State Listen).LocalPort |
+      Where-Object { $_ -gt 10000 }
+  }
+}
+# 2) 问它自己
+Invoke-RestMethod "http://127.0.0.1:$port/health"
+```
+
+`connected: true` 就说明 addon 已应答。再打 `/preview` 能拿到一张当前视口 PNG。
+
+---
+
 ## 为什么需要 addon，不能直连
 
 Blender 的所有 `bpy` 操作**必须在主线程**跑。addon 的作用就是起一个本地 TCP 服务，把外部命令排队扔回主线程执行——这是绕过 Blender 线程模型的唯一正路。所以 App 侧永远是「连 addon」，不是「连 Blender」。

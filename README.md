@@ -145,6 +145,38 @@ Hana 模型 → blender 工具
 
 ---
 
+## 中继 HTTP 面（免鉴权只读）
+
+中继的主要消费者是工具面，但它也开了一条**很窄的 HTTP 面**，给卡片、脚本这类「拿不到 key」的调用方用。
+
+**只有下面这些路径免鉴权**，其余一律要 `x-relay-key` 头——而 key 只活在宿主进程内存里，不落盘：
+
+| 路径 | 方法 | 做什么 |
+|---|---|---|
+| `/health` | GET / POST | 进程与连接状态、调用计数、**当前免鉴权路径清单** |
+| `/doctor` | POST | 三级探测（ping → addon → bpy），不改任何东西 |
+| `/preview` | **GET** | **实时预览快照**：当前视口一张 PNG（固定 `maxSize=900`） |
+| `/scene` | POST | 读场景结构 |
+| `/object` | POST | 读单个物体 |
+| `/rt/commands` | POST | 列 addon 命令面 |
+| `/rt/capabilities` | POST | 列能力 |
+| `/rt/who` | POST | 查写锁（lease）持有者 |
+
+### 三个容易踩的点
+
+**① 端口是动态的，而且配置文件常常是旧的。**
+每次拉起中继都换端口。别读 `app-data/blender-bridge/integration/relay-*.json`——那份文件可能是上一轮的旧值，甚至在中继启动后就被删了。可靠做法是**从进程反查**：命令行含 `blender-relay` 的那个 `hana-server` 子进程，取它 listen 的端口；或者先打 `/health` 问它自己。
+
+**② 白名单只答了「谁免鉴权」，没答「怎么调」。**
+`/preview` 是 **GET**，其余多数是 **POST**。方法不对照样 403——路径在白名单里不等于能调通。改这块时这两处要一起看（`PUBLIC_READ_PATHS` 和 `isPublicRead`）。
+
+**③ `/preview` 为什么单开一条，不复用 `/see`。**
+`/see` 接 `maxSize` / `file` 等参数，而预览只要一张快照；单开一条让调用方不必猜参数。它进免鉴权面的理由也很硬：预览是纯读（截图），不放它就得把 key 交给调用方，而 key 拿不到。
+
+> 免鉴权门只开给**读**。写操作（`/do`、`/render`、`/service/*`）永远要 key，别为了图方便往里加。
+
+---
+
 ## 安装
 
 见 `INSTALL.md`。两半：装 Blender 本体 + 装 Blender 侧 addon（`vendor/blender-mcp-addon.py`）。
@@ -194,6 +226,7 @@ Blender 侧的 MCP 桥接 addon。
 
 ## 版本
 
+- `1.54.0` — **中继免鉴权只读面**（`/preview` 等八条，见上）；装配特征库（`plan op=fit_help` / `mate_check`）；生成后自动干涉检查（`do check=collide`）；画风比例模板（`plan op=proportion`）。schema 抽成 `schema.js` 单一事实源，自检对齐 35 action / 137+ 参数
 - `1.2.0` — 归档体系（run 目录 + 标记制 + 工作台）、多会话写锁、热会话、后台作业、配置落盘、包体精简 0.85 MB
 - `1.1.0` — 能力面修复：25 条 action 说明接回工具描述（此前是死代码），schema 103 KB → 14.4 KB
 - `0.8.0` — 迁移上游 runtime：任意视角、内环搜索、契约层（三态判定）、事务回滚、无头进程
