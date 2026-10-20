@@ -20,6 +20,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdir
 import { join } from "node:path";
 import { createRunStore, TAG_BASELINE, TAG_DELIVERED, DEFAULT_KEEP } from "./lib/archive.mjs";
 import { pruneStaleRuntimeConfigs } from "./lib/runtime-config.mjs";
+import { loadTemplates, proportionReport, styleNames } from "./lib/proportion.mjs";
 // 接口契约的唯一事实来源。见 schema.js 头部：为什么它必须在这个闭包之外。
 import * as SCHEMA from "./schema.js";
 
@@ -1414,27 +1415,22 @@ export default defineApp(async (sdk) => {
         //   「schema 里有 style 参数」「JSON 文件存在」都是绿的。
         //   教训：验证要打在**调用本身**上，不是打在旁边的零件上。
         if (op === "proportion") {
-          const style = String(args.style || args.args?.style || "").toLowerCase();
-          const pt = JSON.parse(fs.readFileSync(path.join(__dirname, "runtime", "proportion_templates.json"), "utf8"));
-          const styles = pt.styles || {};
-          const lines = [`比例模板 · 单位：${pt.units || "ratio"}`];
-          if (!style || style === "list") {
-            lines.push(`- 共 ${Object.keys(styles).length} 种画风`);
-            for (const [k, v] of Object.entries(styles)) {
-              lines.push(`  · ${k}（${v.cn}）→ ${v.heads}头身｜身 ${v.torso_h}｜腿 ${v.legs_h}｜臂 ${v.arms_h}`);
-            }
-            lines.push(`- 用法：plan op=proportion style=<画风名>`);
-          } else {
-            const t = styles[style];
-            if (!t) {
-              lines.push(`- 未找到画风「${style}」。可选：${Object.keys(styles).join(" / ")}`);
-            } else {
-              lines.push(`- ${style}（${t.cn}）：${t.heads}头身`);
-              lines.push(`  头：1｜身：${t.torso_h}｜腿：${t.legs_h}｜臂：${t.arms_h}`);
-              if (t.note) lines.push(`  ${t.note}`);
-            }
+          // 读模板 + 出报告都在 lib/proportion.mjs —— 那边可被直接调用、可测。
+          // 这块原先长在这里，累积了三个只有「真调一次」才暴露的缺陷：
+          //   ① 位置在上游调用之后（结构上到不了）
+          //   ② 引用了不存在的 `fs` / `path` 命名空间
+          //   ③ ES module 里没有 `__dirname`
+          // 三个错叠在一起，因为它们**一次都没被执行过**。
+          let pt;
+          try {
+            pt = loadTemplates(import.meta.dirname || ".");
+          } catch (e) {
+            return textResult(`比例模板读取失败：${e?.message || e}`);
           }
-          return textResult(lines.join("\n"), { details: { ok: true, op: "proportion", style: style || "list" } });
+          const style = String(args.style || args.args?.style || "").toLowerCase();
+          return textResult(proportionReport(pt, style).join("\n"), {
+            details: { ok: true, op: "proportion", style: style || "list", styles: styleNames(pt) },
+          });
         }
 
         // fit_help / mate_check 的参数可以顶层传（feature, fit, nominal, tol_mm），
