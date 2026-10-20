@@ -21,7 +21,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 // 免鉴权只读面的单一事实源（白名单 + 允许的方法 + 自检）。见该文件头注释。
-import { PUBLIC_READ_PATHS, isPublicRead, checkPolicy } from "./relay-policy.mjs";
+import { PUBLIC_READ_PATHS, isPublicRead, checkPolicy, browserFingerprintBlock } from "./relay-policy.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -1459,6 +1459,13 @@ function authorized(req) {
 //   这张表因此长期没被任何测试照到，/preview 的 403 就是这么穿过去的。
 // **改免鉴权面，改那个文件，别在这儿加分支。**
 
+// ── G2 · Host / 浏览器指纹 ────────────────────────────────────────────────
+//
+// 实现在 runtime/relay-policy.mjs —— 与本文件同一个目录。
+// 为何抽出去：relay 是个一 import 就起服务、还要读 argv 的模块，测不了；
+//   而这一闸正是审查方第一条看的。抽出去就能对负向矩阵逐项断言。
+// **改口径改那个文件，别在这儿加分支。**
+
 const server = http.createServer(async (req, res) => {
   let url;
   try {
@@ -1467,6 +1474,15 @@ const server = http.createServer(async (req, res) => {
     return jsonReply(res, 400, { ok: false, error: "bad url" });
   }
   const path = url.pathname;
+
+  // ── G2：所有路由之前 ────────────────────────────────────────────────
+  // ！必须在 path === "/health" 之前——否则那一支会先 return 跑掉，
+  //   而 /health 正是免鉴权面里最常被外部碰到的一条。
+  const blockedBy = browserFingerprintBlock(req.headers, { host: ADDON_HOST, port: PORT });
+  if (blockedBy) {
+    log(`G2 拒绝：${req.method} ${path} — ${blockedBy}`);
+    return jsonReply(res, 403, { ok: false, error: "forbidden" });
+  }
 
   if (path === "/health") {
     return jsonReply(res, 200, {
