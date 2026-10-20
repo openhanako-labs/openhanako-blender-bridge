@@ -1439,6 +1439,7 @@ function authorized(req) {
 const PUBLIC_READ_PATHS = new Set([
   "/health",          // 进程与连接状态
   "/doctor",          // 三级探测（ping → addon → bpy），不改任何东西
+  "/preview",         // 实时预览：截图（GET，免鉴权，给卡片用）
   "/scene",           // 读场景结构
   "/object",          // 读单个物体
   "/rt/commands",     // 列 addon 命令面
@@ -1449,7 +1450,8 @@ const PUBLIC_READ_PATHS = new Set([
 function isPublicRead(path, method) {
   if (path === "/health") return true;          // GET 为主，不限制方法
   if (!PUBLIC_READ_PATHS.has(path)) return false;
-  return method === "POST";                      // 其余统一 POST
+  if (path === "/preview") return method === "GET";     // 预览是 GET
+  return method === "POST";                              // 其余统一 POST
 }
 
 const server = http.createServer(async (req, res) => {
@@ -1491,6 +1493,18 @@ const server = http.createServer(async (req, res) => {
     }
     if (path === "/see" && req.method === "POST") {
       return jsonReply(res, 200, await see(await readBody(req)));
+    }
+    // /preview：实时预览（免鉴权）。
+    //
+    // 为何单开一条而不是复用 /see：
+    //   /see 接受 maxSize / file 等参数，而预览只需要一个快照。
+    //   单开一条让调用方（卡片）不用猜参数。
+    //
+    // 为何放进免鉴权面：
+    //   预览是纯读操作（截图），不放它就得把 key 给卡片，
+    //   而 key 只活在宿主内存——卡片根本拿不到。
+    if (path === "/preview" && req.method === "GET") {
+      return jsonReply(res, 200, await see({ maxSize: 900, format: "png" }));
     }
     if (path === "/do" && req.method === "POST") {
       const body = await readBody(req);
