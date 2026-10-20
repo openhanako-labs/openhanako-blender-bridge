@@ -1465,6 +1465,34 @@ export default defineApp(async (sdk) => {
             const why = Array.isArray(res.why) ? res.why : [res.why];
             for (const w of why.slice(0, 5)) lines.push(`  · ${String(w).slice(0, 120)}`);
           }
+        } else if (op === "proportion") {
+          // 比例模板速查（本地 JSON，不走上游）。
+          //
+          // 为何做进 plan：它和 fit_help 同类——都是「查数据表」。
+          //   放在一起让模型一次调用就能拿到比例 + 公差，不用翻两个地方。
+          //
+          // 与 fit_help 的区别：fit_help 在上游（contract.py），
+          //   而比例模板是本 App 自己维护的数据文件（runtime/proportion_templates.json），
+          //   因为上游没有这个概念——它是从像素建模视频里提炼出来的。
+          let style = String(args.style || args.args?.style || "").toLowerCase();
+          const pt = JSON.parse(fs.readFileSync(path.join(__dirname, "runtime", "proportion_templates.json"), "utf8"));
+          const styles = pt.styles || {};
+          if (!style || style === "list") {
+            lines.push(`- 比例模板：${Object.keys(styles).length} 种画风｜单位：${pt.units || "ratio"}`);
+            for (const [k, v] of Object.entries(styles)) {
+              lines.push(`  · ${k}（${v.cn}）→ ${v.heads}头身｜身 ${v.torso_h}｜腿 ${v.legs_h}｜臂 ${v.arms_h}`);
+            }
+            lines.push(`- 用法：plan op=proportion style=<画风名>`);
+          } else {
+            const t = styles[style];
+            if (!t) {
+              lines.push(`- 未找到画风「${style}」。可选：${Object.keys(styles).join(" / ")}`);
+            } else {
+              lines.push(`- ${style}（${t.cn}）：${t.heads}头身`);
+              lines.push(`  头：1｜身：${t.torso_h}｜腿：${t.legs_h}｜臂：${t.arms_h}`);
+              if (t.note) lines.push(`  ${t.note}`);
+            }
+          }
         } else if (String(op).startsWith("generator")) {
           if (op === "generator_list") {
             lines.push(`- 注册表：${res.count ?? 0} 个生成器｜目录：${res.root || "-"}`);
@@ -2715,6 +2743,67 @@ export default defineApp(async (sdk) => {
         }
         const body = JSON.stringify(r.result ?? null, null, 2);
         await settleOk(out.taskId, { text: `Blender 执行完成（用时 ${((Date.now() - out.startedAt) / 1000).toFixed(1)}s）` });
+
+        // check=collide：执行完后自动跑一次零件碰撞检查。
+        //
+        // 为何不默认开：collide 要跑一遍所有网格的包围盒两两比对，
+        //   几十个零件时约 100-300ms。纯读取（scene info / 量尺寸）没必要跑。
+        //
+        // 为何做成显式参数而不是默认开：给模型选择权。
+        //   建完一批零件传 check=collide，看一眼结果；
+        //   只是跑个脚本查信息就别浪费这次碰撞。
+        if (args.check === "collide") {
+          const cc = await relayFetch("/do", {
+            code: [
+              "import bpy, itertools, json",
+              "from mathutils import Vector",
+              "def _bb(o):",
+              "    lo = Vector((1e18,)*3); hi = Vector((-1e18,)*3)",
+              "    for c in o.bound_box:",
+              "        w = o.matrix_world @ Vector(c)",
+              "        for i in range(3):",
+              "            lo[i]=min(lo[i],w[i]); hi[i]=max(hi[i],w[i])",
+              "    return lo,hi",
+              "objs = [o for o in bpy.context.scene.objects if o.type=='MESH' and not o.hide_viewport]",
+              "if len(objs) < 2:",
+              "    print('VERDICT PASS - 只有 ' + str(len(objs)) + ' 个网格')",
+              "    raise SystemExit",
+              "bb = {o.name: _bb(o) for o in objs}",
+              "EPS = 0.0005",
+              "hits = []",
+              "for a, b in itertools.combinations(sorted(bb), 2):",
+              "    la, ha = bb[a]; lb, hb = bb[b]",
+              "    d = [min(ha[i], hb[i]) - max(la[i], lb[i]) for i in range(3)]",
+              "    if not all(v > EPS for v in d): continue",
+              "    da = [ha[i]-la[i] for i in range(3)]",
+              "    db = [hb[i]-lb[i] for i in range(3)]",
+              "    contains = all((da[i] >= db[i] - EPS) for i in range(3)) or all((db[i] >= da[i] - EPS) for i in range(3))",
+              "    thin = round(min(d)*1000, 2)",
+              "    flat_a = round(min(da)*1000, 2)",
+              "    flat_b = round(min(db)*1000, 2)",
+              "    thin_a = min(da)*1000 < 2",
+              "    thin_b = min(db)*1000 < 2",
+              "    if thin_a and thin_b: continue  # 两块薄壳搭一截 = 正常拼缝",
+              "    hits.append({'a': a, 'b': b, 'overlap_mm': [round(v*1000,2) for v in d],",
+              "                 'vol_mm3': round(d[0]*d[1]*d[2]*1e9, 1), 'thinnest_mm': thin,",
+              "                 'flat_a': flat_a, 'flat_b': flat_b, 'contains': contains})",
+              "if not hits:",
+              "    print('VERDICT PASS')",
+              "else:",
+              "    print('VERDICT FAIL - ' + str(len(hits)) + ' 处需要处理')",
+              "    for h in hits:",
+              "        tag = '包住' if h['contains'] else '穿模'",
+              "        print(f\"{h['a']} x {h['b']}: {tag} overlap={h['overlap_mm']} vol={h['vol_mm3']} thin={h['thinnest_mm']}mm\")",
+            ].join("\n"),
+          }, 30_000);
+          if (cc.ok !== false) {
+            const ctxt = String(cc.result || "");
+            const verdict = ctxt.includes("VERDICT PASS") ? "✅ PASS" : "❌ FAIL";
+            const tail = ctxt.split("\n").slice(0, 20).join("\n");
+            return textResult(`${body}\n\n--- 碰撞检查（自动）---\n${verdict}\n${tail}${ctxt.length > 800 ? "\n..." : ""}`);
+          }
+        }
+
         return textResult(notice ? `${notice}\n\n${body}` : body);
       }
 

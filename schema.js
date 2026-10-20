@@ -24,7 +24,7 @@
     },
     {
       id: "do",
-      summary: "在 Blender 主线程执行一段 Python（bpy 可用）。改了场景想立刻确认，用 see 再看一眼。",
+      summary: "在 Blender 主线程执行一段 Python（bpy 可用）。改了场景想立刻确认，用 see 再看一眼。check=collide 会在执行完后自动跑一次零件碰撞检查（建完一批零件时传它，省一次手动 audit）。不确定就先 txn op=mark 打回退点。",
     },
     {
       id: "scene",
@@ -163,6 +163,7 @@
 
   export const PARAM_SPEC = {
     timeoutMs: { type: "integer", description: "可选超时（毫秒）。" },
+    check: { type: "string", description: "do：执行完后自动跑碰撞检查。填 collide 会跑一次零件间包围盒相交 + 穿模判定（拼缝自动过滤）。纯读取脚本不必传。" },
     holder: { type: "string", description: "租约持有者标识（lease 用；省略则为 anonymous）。" },
     ttlMs: { type: "integer", description: "租约有效期毫秒（默认 10 分钟，范围 5s~24h）。" },
     force: { type: "boolean", description: "true 则抢占别人的租约（lease / 写操作均可带）。" },
@@ -191,6 +192,7 @@
     d: { type: "number", description: "直径（mm），plan op=fit_help 用：特征的关键尺寸，如 peg 的直径。" },
     m: { type: "number", description: "公制螺纹标称直径（mm），plan op=fit_help 用：查 ISO 273 间隙孔表，返回 clearance_diameter。" },
     conn_id: { type: "string", description: "连接 id（plan op=mate_check 用）：由 plan op=register_connection 返回。" },
+    style: { type: "string", description: "画风名（plan op=proportion 用）：chibi（Q版）/ anime（二次元）/ realistic（写实）/ mc（体素方块）。查比例模板用。" },
     tol_mm: { type: "number", description: "允许偏差（mm），plan op=mate_check 用：实测间隙落在 [nominal-tol, nominal+tol] 内判 supported。默认 0.15。" },
     path: { type: "string", description: "service op=start：blender.exe 显式路径。loop op=export：导出路径。preset：路径。" },
     jobId: { type: "string", description: "渲染任务 id（render op=status 用）。" },
@@ -334,7 +336,7 @@
   export const ACTION_PARAMS = {
     doctor: [],
     see: ["maxSize", "file", "view", "fit"],
-    do: ["code", "timeoutMs"],
+    do: ["code", "timeoutMs", "check"],
     scene: [],
     object: ["op", "name", "kind", "to", "names", "location", "rotation", "scale", "offset", "material", "holder", "force", "runId", "label"],
     raw: ["type", "params", "timeoutMs"],
@@ -345,7 +347,7 @@
     view: ["from", "look_at", "width", "height", "lens", "ortho", "runId", "label", "name", "hero", "continueRun"],
     loop: ["op", "spec", "limit", "history", "path", "top", "iterations"],
     txn: ["op", "args", "label"],
-    plan: ["op", "args", "feature", "fit", "nominal", "tol_mm", "d", "m", "conn_id"],
+    plan: ["op", "args", "feature", "fit", "nominal", "tol_mm", "d", "m", "conn_id", "style"],
     headless: ["code", "file", "outdir", "args", "timeoutMs"],
     commands: [],
     qc: ["op", "args"],
@@ -377,7 +379,7 @@
     render: "start / status",
     loop: "start / status / stop / board / export / help",
     txn: "mark / revert / marks / list / snapshot / restore / drop / help",
-    plan: "自由 op（status / register_connection / check_envelope / qc_compare / generator_* / fit_help / mate_check / ...）",
+    plan: "自由 op（status / register_connection / check_envelope / qc_compare / generator_* / fit_help / mate_check / proportion / ...）",
     qc: "compare / compare_auto / self_check / render_views / help",
     deliver: "export / verify / help",
     audit: "mesh / scene / duplicates / collide / help",
