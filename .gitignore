@@ -1,0 +1,32 @@
+# 构建产物
+dist/
+*.zip
+
+# 依赖与缓存
+node_modules/
+__pycache__/
+*.pyc
+
+# 运行产物（App 自己的 app-data 不在本目录；这里是保险）
+runs/
+logs/
+work/
+integration/
+.runtime-tmp/
+
+# 临时与备份
+*.tmp
+*.bak
+*~
+_backup-*/
+
+# 系统与编辑器
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+
+# 密钥（本 App 走 argv 传 key，不落盘；此条是防线，不是依赖）
+secrets/
+*.key
