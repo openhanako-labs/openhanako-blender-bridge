@@ -19,6 +19,7 @@ import { randomBytes, randomInt } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createRunStore, TAG_BASELINE, TAG_DELIVERED, DEFAULT_KEEP } from "./lib/archive.mjs";
+import { pruneStaleRuntimeConfigs } from "./lib/runtime-config.mjs";
 // 接口契约的唯一事实来源。见 schema.js 头部：为什么它必须在这个闭包之外。
 import * as SCHEMA from "./schema.js";
 
@@ -184,10 +185,22 @@ export default defineApp(async (sdk) => {
     return e;
   }
 
-  // ── 私有运行时配置（0600，启动即删）────────────────────────────────────────
+  // ── 私有运行时配置（读完即删）─────────────────────────────────────────────────
+  //
+  // 这份文件里带明文 controlKey，只该活到「中继把它读走」为止。两道保险：
+  //   ① 中继读完自己删（relay.mjs 的 CFG_PATH 处理）—— 最短因果链
+  //   ② 写新文件前清掉 integration/ 里的陈年残留（lib/runtime-config.mjs）
+  //
+  // 为什么需要 ②：早期靠「启动后 10 秒定时器」删，进程早退就漏。
+  //   实测漏过一个（2026-10-15 的 v1.8.0），明文 key 一直躺在那儿，
+  //   还会误导后来查端口的人——它指着一个早已不存在的进程。
+  //
+  // 另：mode 0o600 + chmod 在 Windows 上多半是 no-op，不能当真防线。
   function writeRuntimeConfig(port, readyMarker, controlKey) {
     const dir = join(dataDir, "integration");
     mkdirSync(dir, { recursive: true });
+    const stale = pruneStaleRuntimeConfigs(dir);
+    if (stale.length) log(`清掉 ${stale.length} 个陈年中继配置：${stale.join(", ")}`);
     const configPath = join(dir, `relay-${randomBytes(6).toString("hex")}.json`);
     const config = {
       mode: "managed",
@@ -257,6 +270,9 @@ export default defineApp(async (sdk) => {
       const code = /not authorized|authoriz|DENIED|declined/i.test(raw) ? "not-authorized" : "unknown";
       throw withCode(`${USER_TEXT[code]}（宿主：${raw}）`, code);
     }
+    // 兜底：中继本应在读到配置后立刻自删（见 relay.mjs）。这一道是保险，
+    // 因为「中继压根没起来」时它读不到、也就删不掉。
+    // 不靠它做主力——定时器绑在 App 进程上，进程早退它就永不触发（就是它漏过一个）。
     const cleanup = setTimeout(() => { try { rmSync(configPath, { force: true }); } catch { /* 忽略 */ } }, 10_000);
     cleanup.unref?.();
 

@@ -15,11 +15,13 @@
 
 import net from "node:net";
 import http from "node:http";
-import { readFileSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
+// 免鉴权只读面的单一事实源（白名单 + 允许的方法 + 自检）。见该文件头注释。
+import { PUBLIC_READ_PATHS, isPublicRead, checkPolicy } from "./relay-policy.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -201,6 +203,12 @@ try {
   process.exit(2);
 }
 
+// 读完立刻删：controlKey 不留在磁盘上。
+// 为什么不交给启动方删：那边用的是 10 秒定时器，进程早退就漏——
+//   实测漏过一个（integration/relay-2d6d6e10114c.json，2026-10-15 的 v1.8.0），
+//   里面的明文 key 一直躺在那儿。谁读谁删，是最短的那条因果链。
+try { rmSync(CFG_PATH, { force: true }); } catch { /* 忽略 */ }
+
 const PORT = Number(cfg.port);
 const READY_MARKER = String(cfg.readyMarker || "");
 const CONTROL_KEY = String(cfg.controlKey || "");
@@ -217,6 +225,16 @@ if (!Number.isInteger(PORT) || PORT <= 0) {
 if (!READY_MARKER) {
   console.error("FATAL blender-relay: 配置 readyMarker 缺失");
   process.exit(2);
+}
+
+// 免鉴权面自检：白名单与「允许的方法」必须同键。
+// 错了就拒绝起服务——比起带着一个没人看得见的口子跑，宁可不起。
+{
+  const problems = checkPolicy();
+  if (problems.length) {
+    console.error(`FATAL blender-relay: 免鉴权面策略自检失败：${problems.join("；")}`);
+    process.exit(2);
+  }
 }
 
 // ── 日志 ─────────────────────────────────────────────────────────────────────
@@ -1423,10 +1441,10 @@ function authorized(req) {
 
 // ── 免鉴权的只读面 ────────────────────────────────────────────────────────
 //
-// 为何需要它：controlKey 每次启动随机生成、写完就删，只活在进程内存。
-//   于是外部工具（调试脚本、CI、修问题的终端）**没有任何稳定方式接入**——
-//   实测：想直连查一个场景状态，只能从命令行里找到配置路径，而文件已不存在。
-//   安全是对的，但不该把“读一下现状”也一起关死。
+// 为何需要它：controlKey 每次启动随机生成，只经一个启动用的临时配置文件交给中继，
+//   中继读完即删（见上面 CFG_PATH 处理）。于是外部工具（调试脚本、CI、修问题的终端）
+//   **没有任何稳定方式接入**——实测：想直连查一个场景状态，只能从命令行里找到配置
+//   路径，而文件已不存在。安全是对的，但不该把“读一下现状”也一起关死。
 //
 // 为何用白名单而不是“按 op 判读写”：
 //   按 op 判需要先读 body，而 body 只能读一次——鉴权层读过了路由就读不到。
@@ -1436,23 +1454,10 @@ function authorized(req) {
 //   它们都不接受“要做什么”这个参数，只接受“读哪个”。
 //   对比：/rt/plan 也支持只读 op，但它同时支持会改场景的 op——
 //   路径本身分不出读写，所以不放进免鉴权面。
-const PUBLIC_READ_PATHS = new Set([
-  "/health",          // 进程与连接状态
-  "/doctor",          // 三级探测（ping → addon → bpy），不改任何东西
-  "/preview",         // 实时预览：截图（GET，免鉴权，给卡片用）
-  "/scene",           // 读场景结构
-  "/object",          // 读单个物体
-  "/rt/commands",     // 列 addon 命令面
-  "/rt/capabilities", // 列能力与指标
-  "/rt/who",          // 看谁持锁（多会话共存时先看它）
-]);
-
-function isPublicRead(path, method) {
-  if (path === "/health") return true;          // GET 为主，不限制方法
-  if (!PUBLIC_READ_PATHS.has(path)) return false;
-  if (path === "/preview") return method === "GET";     // 预览是 GET
-  return method === "POST";                              // 其余统一 POST
-}
+// 白名单与「允许的方法」都在 runtime/relay-policy.mjs——单一事实源。
+// 为什么它单独成文件：relay 是个一 import 就起服务的模块，测不了；
+//   这张表因此长期没被任何测试照到，/preview 的 403 就是这么穿过去的。
+// **改免鉴权面，改那个文件，别在这儿加分支。**
 
 const server = http.createServer(async (req, res) => {
   let url;
@@ -1476,7 +1481,7 @@ const server = http.createServer(async (req, res) => {
       // 为何要明写在回执里：否则外部工具得靠猜——而猜错的代价是 403，
       //   它分不清“路径不对”和“没权限”。这两个是不同的事。
       publicRead: [...PUBLIC_READ_PATHS],
-      authNote: "其余路径需要 x-relay-key 头；key 只在宿主进程内存里，不落盘。",
+      authNote: "其余路径需要 x-relay-key 头；key 只经启动用的临时配置文件交给中继，读完即删。注意 Windows 上 0600 权限位不保证生效。",
     });
   }
   if (!isPublicRead(path, req.method) && !authorized(req)) {
