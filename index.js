@@ -189,7 +189,9 @@ export default defineApp(async (sdk) => {
 
   // ── 私有运行时配置（读完即删）─────────────────────────────────────────────────
   //
-  // 这份文件里带明文 controlKey，只该活到「中继把它读走」为止。两道保险：
+  // ！这份文件里**不再有密钥**（G1 起密钥走 argv 末位，不落盘）。
+  //   留着「读完即删 + 启动清理」两道保险，是因为端口与 readyMarker 也不该积在磁盘上。
+  //   两道保险：
   //   ① 中继读完自己删（relay.mjs 的 CFG_PATH 处理）—— 最短因果链
   //   ② 写新文件前清掉 integration/ 里的陈年残留（lib/runtime-config.mjs）
   //
@@ -198,7 +200,7 @@ export default defineApp(async (sdk) => {
   //   还会误导后来查端口的人——它指着一个早已不存在的进程。
   //
   // 另：mode 0o600 + chmod 在 Windows 上多半是 no-op，不能当真防线。
-  function writeRuntimeConfig(port, readyMarker, controlKey) {
+  function writeRuntimeConfig(port, readyMarker) {
     const dir = join(dataDir, "integration");
     mkdirSync(dir, { recursive: true });
     const stale = pruneStaleRuntimeConfigs(dir);
@@ -208,7 +210,6 @@ export default defineApp(async (sdk) => {
       mode: "managed",
       port,
       readyMarker,
-      controlKey,
       addonHost: state.config.addonHost,
       addonPort: state.config.addonPort,
       workDir: state.config.workDir,
@@ -250,7 +251,12 @@ export default defineApp(async (sdk) => {
     }
     const port = randomInt(38000, 52001);
     const readyMarker = "BLENDER_RELAY_READY:" + randomBytes(18).toString("base64url");
-    const controlKey = randomBytes(24).toString("base64url");
+    // G1：调用方密钥。每次拉起重新生成，**经 argv 末位传给中继**，不落盘。
+    //
+    // 为何 32 字节 hex（而非早先的 24 字节 base64url）：对齐发布手册 §1.1 的口径
+    //   —— `randomBytes(32).hex`，64 个字符。与 hanako-gallery / hanako-mail 同形，
+    //   审查方不用为这一个 App 另记一套。
+    const controlKey = randomBytes(32).toString("hex");
     const configPath = writeRuntimeConfig(port, readyMarker, controlKey);
 
     log(`启动中继受管 runtime（attempt ${attempt}/3，端口 ${port}，addon ${state.config.addonHost}:${state.config.addonPort}）`);
@@ -262,7 +268,7 @@ export default defineApp(async (sdk) => {
         profile: "local-machine",
         network: "external",
         cwd: dataDir,
-        args: [configPath],
+        args: [configPath, controlKey],
         service: { port, readyMarker },
       });
     } catch (e) {
@@ -490,7 +496,7 @@ export default defineApp(async (sdk) => {
     try {
       res = await sdk.runtime.fetch(state.runtimeId, path, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-relay-key": state.controlKey || "" },
+        headers: { "content-type": "application/json", "X-Hanako-Service-Key": state.controlKey || "" },
         body: JSON.stringify(body && typeof body === "object" ? body : {}),
         timeoutMs: Math.min(Math.max(timeoutMs, 1000), 30_000),
       });

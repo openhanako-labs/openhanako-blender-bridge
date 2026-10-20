@@ -19,7 +19,7 @@ import { readFileSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSy
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 // 免鉴权只读面的单一事实源（白名单 + 允许的方法 + 自检）。见该文件头注释。
 import { PUBLIC_READ_PATHS, isPublicRead, checkPolicy, browserFingerprintBlock } from "./relay-policy.mjs";
 
@@ -203,15 +203,27 @@ try {
   process.exit(2);
 }
 
-// 读完立刻删：controlKey 不留在磁盘上。
-// 为什么不交给启动方删：那边用的是 10 秒定时器，进程早退就漏——
-//   实测漏过一个（integration/relay-2d6d6e10114c.json，2026-10-15 的 v1.8.0），
-//   里面的明文 key 一直躺在那儿。谁读谁删，是最短的那条因果链。
+// ── G1 · 调用方密钥（发布审查五道闸之一）──────────────────────────────
+//
+// 口径（Hana App 发布手册 §1.1 G1）：密钥**经 argv 末位传入**，不落盘。
+//   为何不是 env：宿主对 env 有白名单，递不进来。所以只有 argv 这一条。
+//   为何不是配置文件：那等于把密钥放到磁盘上（而我们更早的版本就是那么做的）
+//   —— 而分隔源码里自己就写了 “Windows 上 0600 权限位不保证生效”。
+//
+// 与 hanako-gallery / hanako-mail 同形：启动方每次生成、注入末位、请求头带上。
+const CONTROL_KEY = String(process.argv[3] || "");
+if (!CONTROL_KEY) {
+  console.error("FATAL blender-relay: 缺少调用方密钥（argv[3]）");
+  process.exit(2);
+}
+
+// CFG_PATH 里仍有明文 key 的旧版本残留？现在不写了，但读取侧仍兼容一份已删的文件。
+// 读完立刻删：配置文件里虽已无密钥，但端口/readyMarker 也不该积在磁盘上。
 try { rmSync(CFG_PATH, { force: true }); } catch { /* 忽略 */ }
 
 const PORT = Number(cfg.port);
 const READY_MARKER = String(cfg.readyMarker || "");
-const CONTROL_KEY = String(cfg.controlKey || "");
+const CONTROL_KEY_LEGACY_UNUSED = String(cfg.controlKey || ""); // 旧配置里可能还有；不再使用
 const ADDON_HOST = String(cfg.addonHost || "127.0.0.1");
 const ADDON_PORT = Number(cfg.addonPort || 9876);
 const WORK_DIR = String(cfg.workDir || "");
@@ -1435,8 +1447,17 @@ function readBody(req, limit = 2 * 1024 * 1024) {
 }
 
 function authorized(req) {
-  // 控制面只在本机回环上，且要求 controlKey（除 /health 外）
-  return req.headers["x-relay-key"] === CONTROL_KEY;
+  // G1：常量时间比较。
+  //
+  // 为何不能用 `===`：字符串比较是短路的，比较到第一个不同字符就返回，
+  //   耗时随“猜中几个字符”变化——理论上可被本地进程逐字节试出来。
+  //   密钥只有 64 个字符，代价不低，所以不在这种地方省。
+  const got = String(req.headers["x-hanako-service-key"] || "");
+  if (!got) return false;
+  const a = Buffer.from(got, "utf8");
+  const b = Buffer.from(CONTROL_KEY, "utf8");
+  if (a.length !== b.length) return false;   // timingSafeEqual 要求等长，长度差本身不泄露内容
+  try { return timingSafeEqual(a, b); } catch { return false; }
 }
 
 // ── 免鉴权的只读面 ────────────────────────────────────────────────────────
@@ -1497,14 +1518,14 @@ const server = http.createServer(async (req, res) => {
       // 为何要明写在回执里：否则外部工具得靠猜——而猜错的代价是 403，
       //   它分不清“路径不对”和“没权限”。这两个是不同的事。
       publicRead: [...PUBLIC_READ_PATHS],
-      authNote: "其余路径需要 x-relay-key 头；key 只经启动用的临时配置文件交给中继，读完即删。注意 Windows 上 0600 权限位不保证生效。",
+      authNote: "其余路径需要 X-Hanako-Service-Key 头；key 每次启动重新生成、经 argv 末位传给中继，**不落盘**（发布手册 §1.1 G1 口径，与 hanako-gallery / mail 同形）。",
     });
   }
   if (!isPublicRead(path, req.method) && !authorized(req)) {
     return jsonReply(res, 403, {
       ok: false,
       error: "unauthorized",
-      hint: `这条路径需要 x-relay-key。免鉴权的只读路径：${[...PUBLIC_READ_PATHS].join(" / ")}`,
+      hint: `这条路径需要 X-Hanako-Service-Key。免鉴权的只读路径：${[...PUBLIC_READ_PATHS].join(" / ")}`,
     });
   }
 

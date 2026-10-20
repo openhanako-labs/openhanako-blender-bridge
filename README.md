@@ -158,7 +158,7 @@ Hana 模型 → blender 工具
 
 中继的主要消费者是工具面，但它也开了一条**很窄的 HTTP 面**，给卡片、脚本这类「拿不到 key」的调用方用。
 
-**只有下面这些路径免鉴权**，其余一律要 `x-relay-key` 头——key 每次启动随机生成，只经一个启动用的临时配置文件交给中继，**中继读完即删**：
+**只有下面这些路径免鉴权**，其余一律要 `X-Hanako-Service-Key` 头——key 每次启动重新生成，**经 argv 末位交给中继，不落盘**（发布手册 §1.1 G1 口径，与 `hanako-gallery` / `hanako-mail` 同形）：
 
 | 路径 | 方法 | 做什么 |
 |---|---|---|
@@ -170,6 +170,16 @@ Hana 模型 → blender 工具
 | `/rt/commands` | POST | 列 addon 命令面 |
 | `/rt/capabilities` | POST | 列能力 |
 | `/rt/who` | POST | 查写锁（lease）持有者 |
+
+### 四道安全闸（发布审查口径，手册 §1.1）
+
+本 App 带受管 runtime，属「受管服务 App」，抩抩五道闸。已做：
+
+- **G2 · Host / 浏览器指纹**：Host 只认 `127.0.0.1:<PORT>` / `localhost:<PORT>`；
+  带 `Origin`、或 `Sec-Fetch-Site` 值不是 `none` → 403。实现在 `runtime/relay-policy.mjs`。
+  ！不判 `Sec-Fetch-Mode`：undici 会带 `mode: cors`，一刀切会把宿主桥自己误杀。
+- **G1 · 调用方密钥**：`randomBytes(32).hex`，经 argv 末位传给中继，**不落盘**；
+  服务侧 `timingSafeEqual` 常时比较。
 
 ### 三个容易踩的点
 
