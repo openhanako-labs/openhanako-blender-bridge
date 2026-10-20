@@ -19,8 +19,44 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const PKG_ROOT = path.join(HERE, '..');
 export const IS_WIN = process.platform === 'win32';
-/** WSL 发行版名（拼 UNC 用） */
+/** macOS：宿主与 Blender 同机同 OS，没有 Windows/WSL 的跨 OS 路径问题 */
+export const IS_MAC = process.platform === 'darwin';
+
+/**
+ * 是否真的跑在 WSL 里（而不是原生 Linux）—— issue #11。
+ *
+ * 为什么必须单独判：`wslToWin()` 原来只分了 Windows / macOS，**其余一律当成「Linux 宿主 ⇒ WSL +
+ * Windows 上的 Blender」**，把宿主绝对路径映射成 `\\wsl.localhost\<distro>\…`。原生 Linux 上 Blender
+ * 与宿主同机同 OS（跟 macOS 一样同构），这个映射会让 Blender 把该串当**相对路径**，产物落进一个字面量
+ * 反斜杠目录，后端再按原路径读就 ENOENT ⇒ `blender_rt_see` 恒报 `frame http 502`。
+ *
+ * 判据：环境变量优先（交互式 WSL 一定有）；再退回 /proc/version —— dsh 跑在 systemd 服务里时**不继承**
+ * `WSL_DISTRO_NAME`（issue #6 现场），但那台机器确实是 WSL，不能因此误判成原生 Linux。
+ * 剥成纯函数是为了能在**任何平台**上对拍判据（tests/linux_selftest.mjs [1]）。
+ */
+export function detectWsl(platform, env, procVersion) {
+  if (platform === 'win32' || platform === 'darwin') return false;
+  const e = env || {};
+  if (e.WSL_DISTRO_NAME || e.WSL_INTEROP) return true;
+  return /microsoft|wsl/i.test(String(procVersion || ''));
+}
+
+export const IS_WSL = detectWsl(process.platform, process.env, (function () {
+  try { return fs.readFileSync('/proc/version', 'utf8'); } catch (e) { return ''; }
+})());
+
+/** WSL 发行版名（拼 UNC 用）；非 WSL 平台只用于诊断显示，见 linuxDistroName() */
 export const DISTRO = process.env.WSL_DISTRO_NAME || 'Ubuntu';
+
+/** 原生 Linux 的发行版名（只喂 /doctor 的显示字段；WSL 用 DISTRO） */
+export function linuxDistroName() {
+  try {
+    const t = fs.readFileSync('/etc/os-release', 'utf8');
+    const m = t.match(/^PRETTY_NAME="?([^"\n]+)"?/m) || t.match(/^NAME="?([^"\n]+)"?/m);
+    if (m) return m[1].trim();
+  } catch (e) { /* 读不到就退回平台名，不编 */ }
+  return 'linux';
+}
 
 export const CONFIG_FILES = [
   process.env.DSH_BLENDER_CONFIG,
@@ -43,23 +79,93 @@ function loadFileConfig() {
 
 const FILE = loadFileConfig();
 
-/** Windows 路径 → WSL 路径（D:\a\b → /mnt/d/a/b；Windows 上原样返回） */
+/** Windows 路径 → WSL 路径（D:\a\b → /mnt/d/a/b；UNC → /…；Windows 上原样返回） */
 export function winToWsl(p) {
   const s = String(p || '');
-  if (IS_WIN) return s;
+  if (IS_WIN || IS_MAC) return s;
   const m = s.match(/^([A-Za-z]):[\\/](.*)$/);
   if (m) return '/mnt/' + m[1].toLowerCase() + '/' + m[2].replace(/\\/g, '/');
+  // v0.9.3（D4）：UNC 形态（\\wsl.localhost\<distro>\home\… 或 \\wsl$\…）→ WSL 可见的 /home/…
+  // 旧版**原样返回** → 一旦 workDir 是 WSL 路径（wslToWin 先转成 UNC），台账 / results / trajectory
+  // 就全落在一个 Node 打不开的 UNC 串上（实测：stale 对账查不到台账）。
+  const u = s.match(/^\\\\wsl(?:\.localhost)?\\[^\\]+\\(.*)$/i);
+  if (u) return '/' + u[1].replace(/\\/g, '/');
   return s;
 }
 
-/** WSL/相对路径 → Windows 侧可用路径（/mnt/x/... → X:\...；WSL 内部 → \\wsl.localhost\<distro>\...） */
+/**
+ * 宿主路径 → Blender 进程侧的可用路径。
+ *   Windows     → 反斜杠化（原样）
+ *   WSL         → /mnt/x/... → X:\...；WSL 内部 → \\wsl.localhost\<distro>\...
+ *   原生 Linux  → **恒等**（宿主与 Blender 同机同 OS，跟 macOS 一样不该做跨 OS 改写）—— issue #11
+ *   macOS       → 恒等
+ */
 export function wslToWin(p) {
   const s = String(p || '');
+  if (IS_MAC) return s;
   if (IS_WIN) return s.replace(/\//g, '\\');
+  // 原生 Linux（非 WSL）：恒等。映射成 \\wsl.localhost\… 的话，同机的 Blender 会把它当**相对路径**，
+  // 产物落进一个字面量反斜杠目录（取帧 PNG 写出来但读不到 ⇒ frame http 502、无头脚本打不开）。
+  if (!IS_WSL) return s;
   const m = s.match(/^\/mnt\/([a-z])\/(.*)$/i);
   if (m) return m[1].toUpperCase() + ':' + '\\' + m[2].replace(/\//g, '\\');
   if (s.startsWith('/')) return '\\\\wsl.localhost\\' + DISTRO + s.replace(/\//g, '\\');
   return s;
+}
+
+/**
+ * v0.9.6（D3 · workDir 共享性自证）：这个 WSL 路径，Windows 侧的 Blender 到底看不看得见？
+ *
+ * 为什么需要它（现场实测 2026-09-26，租约自检 D2 失败）：
+ *   自检把隔离工作目录设在 os.tmpdir()（WSL 的 /tmp）。Node 侧写脚本**成功**，
+ *   但 Windows 的 blender.exe 打不开，报
+ *     OSError: Python file "\\wsl.localhost\Ubuntu\tmp\…\dsh_headless_*.py" could not be opened
+ *   → 无头回执 resultJson=null，看起来像"租约把写通道锁死了"，其实根因是**工作目录不共享**。
+ *   Node 侧 `fs.existsSync` 永远说"在"，因为它在 WSL 命名空间里看；能判定的只有挂载归属。
+ *
+ * 判据（读 /proc/self/mounts，不猜、不看 mtime）：
+ *   · /mnt/<盘>/…                       → Windows 侧是 X:\…，共享（drvfs）
+ *   · 与 "/" 同 source 的挂载（发行版根文件系统，本机 /dev/sdd）→ \\wsl.localhost\<distro>\…，共享
+ *   · 其它独立挂载（tmpfs / overlay / …）→ **不能保证** Windows 可见 → false（保守：宁可换目录）
+ * 三态：true（共享）/ false（不可保证共享）/ null（判不了：Windows 平台、相对路径、无挂载表）。
+ */
+let _mountEntries;
+function mountEntries() {
+  if (_mountEntries !== undefined) return _mountEntries;
+  _mountEntries = [];
+  try {
+    const oct = (s) => String(s).replace(/\\(040|011|012|134)/g, (m, o) => String.fromCharCode(parseInt(o, 8)));
+    for (const line of fs.readFileSync('/proc/self/mounts', 'utf8').split('\n')) {
+      const f = line.trim().split(' ');
+      if (f.length < 3) continue;
+      _mountEntries.push({ source: oct(f[0]), target: oct(f[1]), fstype: oct(f[2]) });
+    }
+  } catch (e) { _mountEntries = []; }
+  return _mountEntries;
+}
+
+export function wslPathShared(p) {
+  const s = String(p || '');
+  if (IS_WIN) return { shared: true, why: 'windows' };
+  if (s.charAt(0) !== '/') return { shared: null, why: 'not-absolute' };
+  // native Linux: Blender runs on this same machine, so nothing can be invisible to it
+  if (!IS_MAC && !IS_WSL) return { shared: true, why: 'native-linux-same-machine' };
+  if (/^\/mnt\/[a-z](\/|$)/i.test(s)) return { shared: true, why: 'drvfs-drive' };
+  const ms = mountEntries();
+  if (!ms.length) return { shared: null, why: 'no-mount-table' };
+  const root = ms.find((m) => m.target === '/');
+  let best = null;
+  for (const m of ms) {
+    const t = m.target === '/' ? '/' : m.target.replace(/\/+$/, '');
+    const hit = (t === '/') ? (s.charAt(0) === '/') : (s === t || s.indexOf(t + '/') === 0);
+    if (hit && (!best || t.length > best.target.length)) best = m;
+  }
+  if (!best) return { shared: null, why: 'no-mount-match' };
+  if (root && best.source === root.source) {
+    return { shared: true, why: 'distro-root-fs', source: best.source, fstype: best.fstype, mount: best.target };
+  }
+  return { shared: false, why: 'separate-mount-not-guaranteed-windows-visible',
+           source: best.source, fstype: best.fstype, mount: best.target };
 }
 
 /** 在 WSL 里问 Windows 要 %LOCALAPPDATA%（没有互操作时返回 null） */
@@ -68,6 +174,7 @@ function winLocalAppData() {
   if (_lad !== undefined) return _lad;
   _lad = null;
   if (IS_WIN) { _lad = process.env.LOCALAPPDATA || null; return _lad; }
+  if (IS_MAC) return null;   // macOS 无 %LOCALAPPDATA%；也不需要调 cmd.exe
   try {
     // cwd 要给 Windows 侧目录：在 UNC 路径下 cmd.exe 会警告 "UNC 路径不支持" 并回退到 C:Windows
     const cwd = fs.existsSync('/mnt/c') ? '/mnt/c' : (fs.existsSync('/mnt/d') ? '/mnt/d' : undefined);
@@ -78,11 +185,30 @@ function winLocalAppData() {
 }
 
 /** 工作目录：帧 PNG / 无头脚本 / 临时产物。要求"两端都能读写"。 */
-function resolveWorkDir() {
+function probeWritable(dir) {
+  // 真写一次才算可写（Node 的 mkdir 成功不代表能写：只读挂载/权限/路径过长都会在后一步炸）
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, '.dsh_write_probe_' + process.pid);
+    fs.writeFileSync(p, 'ok', 'utf8');
+    fs.unlinkSync(p);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, why: String((e && e.message) || e).slice(0, 200) };
+  }
+}
+
+/** 原始候选（不探写）；回退逻辑在 resolveWorkDir() 里 */
+function resolveWorkDirRaw() {
   const given = process.env.DSH_BLENDER_WORKDIR || FILE.cfg.workDir;
   if (given) {
     const win = /^[A-Za-z]:[\\/]/.test(given) ? given : wslToWin(given);
     return { win: win, wsl: winToWsl(given), from: 'config' };
+  }
+  if (IS_MAC) {
+    // macOS：用户级持久目录（不用 os.tmpdir()，它会被系统清理，帧/台账会丢）
+    const d = path.join(os.homedir(), '.dsh-blender-rt');
+    return { win: d, wsl: d, from: 'auto:homedir' };
   }
   const lad = winLocalAppData();
   if (lad) {
@@ -93,11 +219,38 @@ function resolveWorkDir() {
   return { win: t, wsl: t, from: 'auto:tmpdir' };
 }
 
+/**
+ * S9：workDir **可写性自证 + 回退**（现场：/mnt/d 变只读后，后端写不了自己的 status/ledger 就起不来，
+ * 而报错只说"看后端日志"，没有一句"你的 workDir 不可写"—— 40 分钟就这么没了）。
+ * 顺序：配置/自动探测的候选 → 包内 tmp（工作区内，通常可写）→ OS tmpdir。回退必须显式留痕。
+ */
+function resolveWorkDir() {
+  const cand = resolveWorkDirRaw();
+  const pr = probeWritable(cand.wsl);
+  if (pr.ok) return Object.assign({}, cand, { writable: true, fallback: null });
+  const pkgTmp = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tmp');
+  const tries = [
+    { dir: pkgTmp, from: 'fallback:pkg-tmp' },
+    { dir: path.join(os.tmpdir(), 'dsh-blender-rt'), from: 'fallback:tmpdir' },
+  ];
+  const errs = [cand.wsl + '（' + cand.from + '）：' + pr.why];
+  for (const t of tries) {
+    const p2 = probeWritable(t.dir);
+    if (p2.ok) {
+      return { win: wslToWin(t.dir), wsl: t.dir, from: t.from, writable: true,
+               fallback: { requested: cand.wsl, requestedFrom: cand.from, why: pr.why, used: t.dir, usedFrom: t.from, errs: errs } };
+    }
+    errs.push(t.dir + '（' + t.from + '）：' + p2.why);
+  }
+  // 全写不了：仍然返回原候选（上层会在写的时候报错），但把证据带上
+  return Object.assign({}, cand, { writable: false, fallback: { requested: cand.wsl, requestedFrom: cand.from, why: pr.why, used: cand.wsl, usedFrom: 'none', errs: errs } });
+}
+
 function listDirSafe(p) {
   try { return fs.readdirSync(p); } catch (e) { return []; }
 }
 
-/** 找 Blender：配置 → 常见安装位置 → PATH（Windows / WSL 都能用） */
+/** 找 Blender：配置 → 常见安装位置 → PATH（Windows / WSL / macOS 都能用） */
 function detectBlenderExe() {
   const given = process.env.DSH_BLENDER_EXE || FILE.cfg.blenderExe;
   if (given) return { exe: given, from: 'config' };
@@ -108,7 +261,27 @@ function detectBlenderExe() {
       if (/^Blender/i.test(d)) cands.push(path.join(pf, 'Blender Foundation', d, 'blender.exe'));
     }
     cands.push(path.join(pf, 'Blender Foundation', 'Blender', 'blender.exe'));
+  } else if (IS_MAC) {
+    // macOS：Blender 官方安装是 .app bundle，可执行文件在 Contents/MacOS 下。
+    // 支持 /Applications、~/Applications 与任意 /Volumes/* 下的版本化目录（Blender 4.2.app、Blender.app…）。
+    const homes = [
+      '/Applications',
+      path.join(os.homedir(), 'Applications'),
+    ];
+    try {
+      for (const v of listDirSafe('/Volumes')) homes.push(path.join('/Volumes', v, 'Applications'));
+    } catch (e) { /* /Volumes 不可读就算了 */ }
+    for (const base of homes) {
+      for (const d of listDirSafe(base)) {
+        if (/^Blender.*\.app$/i.test(d)) {
+          cands.push(path.join(base, d, 'Contents', 'MacOS', 'Blender'));
+        }
+      }
+      // 兜底：未版本化的固定名
+      cands.push(path.join(base, 'Blender.app', 'Contents', 'MacOS', 'Blender'));
+    }
   } else {
+    // Linux/WSL：扫 /mnt/<盘>/Program Files/Blender Foundation/Blender*/blender.exe（含 Steam 版常见位置）
     // WSL：扫 /mnt/<盘>/Program Files/Blender Foundation/Blender*/blender.exe（含 Steam 版常见位置）
     for (const drive of ['c', 'd', 'e', 'f']) {
       const base = '/mnt/' + drive;
@@ -142,18 +315,22 @@ export const CFG = {
   // 通道
   addonHost: process.env.DSH_BLENDER_ADDON_HOST || FILE.cfg.addonHost || '127.0.0.1',
   addonPort: num(process.env.DSH_BLENDER_ADDON_PORT || FILE.cfg.addonPort, 9876),
-  // Blender 侧 addon 的线上协议：auto（默认，探测一次）/ ahujasid / category-action。
-  // 见 runtime/addon-protocol.mjs；探测结果会出现在 /doctor 与 /who 里。
-  addonProtocol: (function () {
-    const v = String(process.env.DSH_BLENDER_ADDON_PROTOCOL || FILE.cfg.addonProtocol || 'auto').trim().toLowerCase();
-    return v === 'ahujasid' || v === 'category-action' ? v : 'auto';
-  })(),
   httpPort: num(process.env.DSH_BLENDER_HTTP_PORT || FILE.cfg.httpPort, 9877),
+  /**
+   * Windows 侧启动代理（D:/DSH/blender/launch-agent.mjs，默认 127.0.0.1:9878）。
+   * WSL 走它拉起 GUI Blender ⇒ 本次启动 0 次互操作调用，回避 microsoft/WSL#41173
+   * 的中继空转泄漏（Interop 线程吃满一个核心且无法释放）。
+   * 代理不在线时自动回退到旧的互操作 spawn；设为 "off" 可强制回退。
+   */
+  launchAgentUrl: String(process.env.DSH_BLENDER_LAUNCH_AGENT_URL || FILE.cfg.launchAgentUrl || "http://127.0.0.1:9878").replace(/\/+$/, ""),
   holder: process.env.DSH_BLENDER_HOLDER || FILE.cfg.holder || ('plugin-pid-' + String(process.pid)),
   leaseTtlMs: num(process.env.DSH_BLENDER_LEASE_TTL_MS || FILE.cfg.leaseTtlMs, 600000),
   // 目录（成对：Windows 侧给 Blender 写，宿主侧给 Node 读）
   workDirWin: WORK.win,
   workDirWsl: WORK.wsl,
+  /** S9：workDir 探写结果与回退留痕（null=原候选可写；非 null=已回退，见 errs） */
+  workDirFallback: WORK.fallback || null,
+  workDirWritable: WORK.writable !== false,
   // 无头进程
   blenderExe: BLENDER.exe,
   /** 用户 Blender 配置目录（GPU 偏好所在）：无头进程默认读不到 → 要继承就设它（配合 factory_startup=false） */
@@ -165,10 +342,21 @@ export const CFG = {
   source: { configFile: FILE.from, workDir: WORK.from, blenderExe: BLENDER.from },
 };
 
+/**
+ * 成对路径：`...Win` 给 Blender 进程用，`...Wsl` 给宿主 Node 用。
+ * macOS 上两者同构，不能再无脑 path.win32.join —— 那会产出
+ * \\Users\\...\\dsh_live_viewport.png，Blender 在 mac 上打不开（取帧静默失败）。
+ */
+function blenderSidePath(p, name) {
+  if (IS_MAC) return path.join(p, name);
+  if (IS_WIN) return path.win32.join(p, name);
+  return wslToWin(path.join(p, name));
+}
+
 export const PATHS = {
-  livePngWin: path.win32.join(CFG.workDirWin, 'dsh_live_viewport.png'),
+  livePngWin: blenderSidePath(CFG.workDirWin, 'dsh_live_viewport.png'),
   livePngWsl: path.join(CFG.workDirWsl, 'dsh_live_viewport.png'),
-  viewPngWin: path.win32.join(CFG.workDirWin, 'dsh_view_capture.png'),
+  viewPngWin: blenderSidePath(CFG.workDirWin, 'dsh_view_capture.png'),
   viewPngWsl: path.join(CFG.workDirWsl, 'dsh_view_capture.png'),
 };
 
@@ -178,11 +366,13 @@ export function describeConfig(over) {
   const o = over || {};
   return {
     platform: process.platform,
-    distro: IS_WIN ? null : DISTRO,
+    // WSL 报发行版名（UNC 里用的就是它）；原生 Linux 报自己的发行版 —— 别再把 Manjaro 报成 'Ubuntu'（issue #11）
+    distro: (IS_WIN || IS_MAC) ? null : (IS_WSL ? DISTRO : linuxDistroName()),
     addon: CFG.addonHost + ':' + String(CFG.addonPort),
-    addonProtocol: CFG.addonProtocol,
     http: '127.0.0.1:' + String(o.httpPort || CFG.httpPort),
-    workDir: { win: CFG.workDirWin, wsl: CFG.workDirWsl, from: CFG.source.workDir },
+    workDir: { win: CFG.workDirWin, wsl: CFG.workDirWsl, from: CFG.source.workDir, fallback: CFG.workDirFallback,
+               // v0.9.6（D3）：这个工作目录 Windows 侧看不看得见（false = 无头脚本会打不开，必须换目录）
+               shared: wslPathShared(CFG.workDirWsl) },
     blenderExe: CFG.blenderExe,
     blenderFrom: CFG.source.blenderExe,
     blenderUserConfig: CFG.blenderUserConfig,

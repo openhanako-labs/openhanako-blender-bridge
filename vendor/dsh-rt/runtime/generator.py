@@ -75,6 +75,12 @@ if CLEAN_SCENE and bpy is not None:
 """
 
 POSTLUDE = """# ---- dsh generator postlude（运行器注入：产出回执）----
+import sys as _sys_kit
+_KIT = getattr(_sys_kit.modules.get("dsh_rt_kernel"), "dsh_kit", None)
+if _KIT is None:
+    raise RuntimeError("generator 需要共享内核 K.dsh_kit（由 KERNEL_BOOTSTRAP 注入）")
+
+
 def _dsh_receipt():
     out = {"PARAMS": PARAMS}
     try:
@@ -102,10 +108,13 @@ _dsh_receipt()
 """
 
 
-def _j(o):
-    return json.dumps(o, ensure_ascii=False, default=str)
+# S7 修：模块顶层直接用 _KIT，但此前**只有 POSTLUDE 字符串里**才有它的定义 ⇒ 纯 python 导入必炸
+# （Blender 侧靠 preload 命名空间串味掩盖了）。这里显式解析一次，缺失就明确报错。
+_KIT = getattr(sys.modules.get("dsh_rt_kernel"), "dsh_kit", None)
+if _KIT is None:
+    raise RuntimeError("generator 需要共享内核 K.dsh_kit（由 KERNEL_BOOTSTRAP 注入；纯 python 路径由 tests 注入）")
 
-
+_j = _KIT.j  # 共享内核（原自带实现已删，见 S1）
 def _kernel():
     return sys.modules.get("dsh_rt_kernel")
 
@@ -410,9 +419,9 @@ def generator_run(name, args=None, dir=None, expect=None, engine="none", factory
 
 def generator_help():
     return _j({"version": GENERATOR_VERSION,
-               "ops": {"save": "name, code, params, note, dir, overwrite → 写 <root>/<name>.py + sidecar",
-                       "run": "name, args, expect{objects|names|min_objects|max_objects|max_tris}, "
-                              "engine, use_cache, timeout_ms, factory_startup → 全新无头进程复现 + 对拍",
+               "ops": {"save": "name, code(**源码字符串**，不是 script), params, note, dir, overwrite → 写 <root>/<name>.py + sidecar",
+                       "run": "name, args(**生成器 PARAMS 的 dict**，嵌套一层，不会被摊平), "
+                              "expect{objects|names|min_objects|max_objects|max_tris}, engine, use_cache, timeout_ms, factory_startup → 全新无头进程复现 + 对拍",
                        "list": "dir → 全部生成器 + stale（源码在最后一次运行后被改过）",
                        "get": "name → 源码 + sidecar", "diff": "name → 源码 vs 上次运行时（变了 → 回执过期）",
                        "selftest": "generator_selftest()"},
@@ -498,32 +507,65 @@ def generator_selftest():
 
 
 def generator_dispatch(op, args=None):
+    """统一入口：工具侧发 {"op": …, "args": {…}}（信封已由引擎剥掉，这里再做一次兜底）。
+
+    v0.9.6 修：旧实现把 payload 里的 `args` 键**无条件摊平**成 kwargs：
+
+        for k, v in (args or {}).items():
+            if k == "args" and isinstance(v, dict):
+                kw.update(v)      # ← 这里
+
+    对别的 op 没问题（它们没有叫 args 的参数），但 `generator_run(name, args, …)` 的
+    **args 就是生成器的 PARAMS**：一次 `{"name":"x","args":{"n":3}}` 会被摊成
+    `generator_run(name="x", n=3)` —— args 消失（PARAMS 变空 {}），n 变成未知参数，
+    要么 TypeError、要么静默拿空参数跑出"能跑通但不对"的结果。现场就是这么踩的。
+
+    现在的语义（两条，都不丢信息）：
+      · op == "run"      → `args` 是**真参数**，原样传下去，绝不摊平；
+      · 其它 op          → 仅当 `args` 是**唯一的键**时按信封拆开（兼容旧调用），
+                           有别的键就保持原样（宁可回"参数不匹配 + help"，也不猜）。
+    """
     if isinstance(args, str):
         try:
             args = json.loads(args) if args.strip() else {}
         except Exception:
             args = {}
-    kw = {}
-    for k, v in (args or {}).items():
-        if k == "args" and isinstance(v, dict):
-            kw.update(v)
-        else:
-            kw[k] = v
+    raw = dict(args or {}) if isinstance(args, dict) else {}
+    opname = str(op)
+    if opname != "run" and set(raw.keys()) == {"args"} and isinstance(raw.get("args"), dict):
+        raw = dict(raw["args"])
     ops = {"save": generator_save, "run": generator_run, "list": generator_list, "get": generator_get,
            "diff": generator_diff, "help": generator_help, "selftest": generator_selftest}
-    fn = ops.get(str(op))
+    fn = ops.get(opname)
     if fn is None:
         return _j({"ok": False, "error": "unknown generator op", "op": op, "ops": sorted(ops)})
     try:
-        return fn(**kw)
+        return fn(**raw)
     except TypeError as e:
-        return _j({"ok": False, "error": "参数不匹配: %s" % str(e)[:200], "op": op, "help": generator_help()})
+        return _j({"ok": False, "error": "参数不匹配: %s" % str(e)[:200], "op": opname,
+                   "expected": {"save": "name, code, params, note, dir, overwrite",
+                                "run": "name, args(=生成器 PARAMS 的 dict), expect, dir, engine, use_cache, timeout_ms",
+                                "list": "dir", "get": "name, dir", "diff": "name, dir"}.get(opname),
+                   "note": "generator_run 的参数名是 args（嵌套一层），不是把 PARAMS 摊平到顶层",
+                   "help": generator_help()})
 
 
 import sys as _sys
 _K = _sys.modules.get("dsh_rt_kernel")
 if _K is not None:
-    _K.dsh_generator_api = {"version": GENERATOR_VERSION, "dispatch": generator_dispatch,
+    _K.dsh_generator_api = _KIT.Api({"version": GENERATOR_VERSION, "dispatch": generator_dispatch,
                             "save": generator_save, "run": generator_run, "list": generator_list,
                             "get": generator_get, "diff": generator_diff,
-                            "selftest": generator_selftest, "help": generator_help}
+                            "selftest": generator_selftest, "help": generator_help})
+
+# ---- v0.9.1（93-B1/B2）：API 可调用化（换成 dict 子类实例，返回已解析对象）----
+# 背景：K.dsh_x_api 原来是普通 dict → 进程内 api(args) 报 TypeError: 'dict' object is not callable；
+# 且 dispatch 返回 JSON 字符串，调用方还得自己 json.loads。
+# 现在：api("op", {…}) 或 api({…}) → dict；api["dispatch"](op, json_str) 仍返回 str（引擎契约不变）。
+# 注意：dict 是静态类型，不能对已有实例做 __class__ 赋值（实测 TypeError），所以换成一个新实例。
+_DshApi = _KIT.Api  # 共享内核（尾部注册行无需改）
+import sys as _sys_api
+_K_api = _sys_api.modules.get("dsh_rt_kernel")
+if _K_api is not None and isinstance(getattr(_K_api, "dsh_generator_api", None), dict) \
+        and not isinstance(getattr(_K_api, "dsh_generator_api", None), _DshApi):
+    _K_api.dsh_generator_api = _DshApi(_K_api.dsh_generator_api)

@@ -29,10 +29,13 @@ QC_VERSION = 5
 PNG_MAGIC = bytes([137, 80, 78, 71, 13, 10, 26, 10])
 
 
-def _j(o):
-    return json.dumps(o, ensure_ascii=False, default=str)
+import sys as _sys_kit
+_KIT = getattr(_sys_kit.modules.get("dsh_rt_kernel"), "dsh_kit", None)
+if _KIT is None:
+    raise RuntimeError("qc 需要共享内核 K.dsh_kit（由 KERNEL_BOOTSTRAP 注入）")
 
 
+_j = _KIT.j  # 共享内核（原自带实现已删，见 S1）
 def _kernel():
     import sys
     return sys.modules.get("dsh_rt_kernel")
@@ -195,7 +198,10 @@ def gif_to_png(path, out=None):
     h, w = arr.shape[0], arr.shape[1]
     rgb = np.ascontiguousarray(arr[:, :, :3]).tobytes()
     out = out or (os.path.splitext(_wp(path))[0] + "_frame0.png")
-    out = out if str(out)[1:2] == ":" or str(out).startswith(chr(92) * 2) else _wp(out)
+    # macOS/Linux 的绝对路径以 / 开头，也要算「已绝对」，否则会被 _wp 再走一遍
+    out_s = str(out)
+    _abs = (out_s[1:2] == ":" or out_s.startswith(chr(92) * 2) or out_s.startswith("/"))
+    out = out if _abs else _wp(out)
     write_png(out, w, h, rgb)
     return _j({"ok": True, "path": out, "size": [w, h], "bytes": os.path.getsize(out),
                "note": "只取首帧；GIF 里其余帧没有解"})
@@ -294,9 +300,9 @@ def qc_iou(a, b):
     w = min(a.shape[1], b.shape[1])
     a2 = qc_resize_mask(a, h, w)
     b2 = qc_resize_mask(b, h, w)
-    inter = int(np.logical_and(a2, b2).sum())
-    union = int(np.logical_or(a2, b2).sum())
-    return {"iou": (inter / union) if union else 0.0, "inter": inter, "union": union,
+    # S2：度量收敛到共享内核（唯一实现）
+    _iou, inter, union = _KIT.iou(a2, b2)
+    return {"iou": (0.0 if _iou is None else _iou), "inter": inter, "union": union,
             "a_px": int(a2.sum()), "b_px": int(b2.sum())}
 
 
@@ -580,9 +586,9 @@ def _down(mask, work):
 
 
 def _iou_pair(a, b):
-    inter = int(np.logical_and(a, b).sum())
-    uni = int(np.logical_or(a, b).sum())
-    return (inter / uni) if uni else 0.0, inter, uni
+    # S2：度量收敛到共享内核（唯一实现）；空并集时 kit 给 None，这里按旧契约返回 0.0
+    iou, inter, uni = _KIT.iou(a, b)
+    return (0.0 if iou is None else iou), inter, uni
 
 
 def _align_search(ref_mask, ren_mask, work=384, coarse=True):
@@ -1111,8 +1117,34 @@ def qc_ops():
 
 import sys as _sys
 _K = _sys.modules.get("dsh_rt_kernel")
+def qc_selftest():
+    # QC 自检：IoU/缩放/剖面都用**已知答案**的合成掩码验（收敛到 kit 后数字必须仍然对）
+    import json
+
+    def _d(x):
+        return json.loads(x) if isinstance(x, str) else x
+
+    import numpy as np
+    ev = {}
+    try:
+        a = np.zeros((10, 10), bool)
+        a[:5, :] = True            # 50 px
+        b = np.zeros((10, 10), bool)
+        b[:, :5] = True            # 50 px，交集 25、并集 75 => IoU = 1/3
+        r = _d(qc_iou(a, b))
+        ev["iou_known"] = abs(float(r.get("iou")) - (25.0 / 75.0)) < 0.002 and int(r.get("inter")) == 25 and int(r.get("union")) == 75
+        m = qc_resize_mask(a, 5, 5)
+        ev["resize_shape"] = tuple(np.asarray(m).shape) == (5, 5)
+        prof = qc_profile(a, bins=5)
+        ev["profile_len"] = len(prof) == 5
+        return _j({"ok": all(x is True for x in ev.values()), "evidence": ev, "iou": r.get("iou")})
+    except Exception as e:
+        return _j({"ok": False, "evidence": ev, "error": "%s: %s" % (type(e).__name__, str(e)[:200])})
+
+
+
 if _K is not None:
-    _K.dsh_qc_api = {"version": QC_VERSION, "dispatch": qc_dispatch, "compare": qc_compare_auto,
+    _K.dsh_qc_api = _KIT.Api({"version": QC_VERSION, "dispatch": _KIT.wrap_dispatch(qc_dispatch, {"selftest": qc_selftest}), "compare": qc_compare_auto,
                      "compare_basic": qc_compare, "mask_auto": qc_mask_auto, "metrics": qc_metrics,
                      "self_check": qc_self_check, "mask_sweep": qc_mask_sweep, "load": qc_load, "crop": qc_crop, "mask": qc_mask,
                      "iou": qc_iou, "profile": qc_profile, "profile_diff": qc_profile_diff,
@@ -1120,6 +1152,7 @@ if _K is not None:
                      "render_views": qc_render_views, "align_search": _align_search, "iou_pair": _iou_pair,
                      "align_rotate": qc_align_rotate, "rotate_mask": _rotate_mask,
                      "gif_first_frame": _gif_first_frame, "gif_to_png": gif_to_png,
-                     "help": qc_help}
+                     "help": qc_help,
+        "selftest": qc_selftest})
     _K.dsh_measure = {"aabb_err": m_aabb_err, "silhouette_iou": m_silhouette_iou,
                       "profile_err": m_profile_err}

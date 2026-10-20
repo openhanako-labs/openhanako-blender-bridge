@@ -56,10 +56,10 @@ FIT_TABLE = {"clearance": 0.25, "location": 0.15, "press": -0.05, "snap": 0.20} 
 FIT_DEFAULT_CLS = "location"
 FIT_DEFAULT_TOL_MM = 0.15              # 默认容差（理由见 c_mate_check 文档串第 3 段）
 MATE_DEPTH_EPS_MM = 0.2                # 计划内接触允许的穿透深度（理由见 c_interference_report）
-MATE_MAX_TRIS = 2000000                # 单侧网格三角面上限：超了 ok:false，绝不"降级成看不清"
-INSIDE_MAX_TRIS = 200000               # 射线奇偶内测试上限：超了报 skipped，不猜
+MATE_MAX_TRIS = 0                      # **0 = 不设上限（默认全跑）**；显式设非 0 才在超限时 ok:false
+INSIDE_MAX_TRIS = 0                    # **0 = 不设上限（默认全跑）**；显式设非 0 才在超限时报 skipped
 VOL_SAMPLES = 1200                     # 重叠体积蒙特卡洛采样数（低差异序列，确定性）
-VOL_MAX_TRIS = 60000                   # 体积估计的网格上限（超了只报深度，不报体积）
+VOL_MAX_TRIS = 0                       # **0 = 不设上限（默认全跑）**；显式设非 0 才在超限时只报深度
 SEV_DEPTH_HIGH_MM = 2.0                # 严重度分档：深度
 SEV_DEPTH_MED_MM = 0.5
 SEV_FRAC_HIGH = 0.25                   # 严重度分档：体积占比
@@ -75,10 +75,13 @@ except NameError:
 FEATURES_JSON = os.path.join(_HERE, FEATURES_JSON_NAME)
 
 
-def _j(o):
-    return json.dumps(o, ensure_ascii=False, default=str)
+import sys as _sys_kit
+_KIT = getattr(_sys_kit.modules.get("dsh_rt_kernel"), "dsh_kit", None)
+if _KIT is None:
+    raise RuntimeError("contract 需要共享内核 K.dsh_kit（由 KERNEL_BOOTSTRAP 注入）")
 
 
+_j = _KIT.j  # 共享内核（原自带实现已删，见 S1）
 def _kernel():
     import sys
     return sys.modules.get("dsh_rt_kernel")
@@ -303,7 +306,7 @@ def c_check_interface(conn_id, mesh=True, samples=1500):
     if mdA is None or mdB is None or mdA["tris_n"] == 0 or mdB["tris_n"] == 0:
         out["mesh"] = {"skipped": True, "why": "求值后没有三角面 → 量不了"}
         return _j(out)
-    if mdA["tris_n"] > MATE_MAX_TRIS or mdB["tris_n"] > MATE_MAX_TRIS:
+    if MATE_MAX_TRIS > 0 and (mdA["tris_n"] > MATE_MAX_TRIS or mdB["tris_n"] > MATE_MAX_TRIS):
         out["mesh"] = {"skipped": True, "why": "网格过大（%d/%d 面 > %d）→ 不判，绝不读成已通过"
                        % (mdA["tris_n"], mdB["tris_n"], MATE_MAX_TRIS)}
         return _j(out)
@@ -1070,7 +1073,7 @@ def _mate_measure(mdA, mdB, mm_per_unit, PA, PB, contact_max_m):
     pen = {"status": "skipped", "tested": False, "points": 0, "depth_max_mm": None,
            "depth_mean_mm": None, "surface_inside_frac": None, "direction": "A→B + B→A",
            "rule": "内外=射线奇偶（闭合网格全局精确）；深度=最近点距离（SDF 近似）"}
-    if mdA["tris_n"] > INSIDE_MAX_TRIS or mdB["tris_n"] > INSIDE_MAX_TRIS:
+    if INSIDE_MAX_TRIS > 0 and (mdA["tris_n"] > INSIDE_MAX_TRIS or mdB["tris_n"] > INSIDE_MAX_TRIS):
         pen["status"] = "skipped_too_big"
         pen["why"] = "网格 %d/%d 面 > 内测试上限 %d → 未做侵入判定" % (mdA["tris_n"], mdB["tris_n"], INSIDE_MAX_TRIS)
     elif not (mdA["closed"] and mdB["closed"]):
@@ -1101,7 +1104,7 @@ def _mate_measure(mdA, mdB, mm_per_unit, PA, PB, contact_max_m):
                "contact_normal": ([_r6(x) for x in normal] if normal is not None else None),
                "contact_normal_rule": "A/B 两团接触点均值之差归一化（两团重合会退化，此时给 null）"}
     ov = None
-    if mdA["tris_n"] + mdB["tris_n"] <= VOL_MAX_TRIS:
+    if VOL_MAX_TRIS <= 0 or (mdA["tris_n"] + mdB["tris_n"]) <= VOL_MAX_TRIS:
         ov = _overlap_estimate(mdA["tris"], mdB["tris"], mdA["volume_m3"], mdB["volume_m3"],
                                mdA["closed"], mdB["closed"])
     return {"used_a": int(len(PA)), "used_b": int(len(PB)), "contact": contact, "gap": gap,
@@ -1217,7 +1220,7 @@ def c_mate_check(conn_id, fit=None, nominal=None, tol_mm=None, samples=4000,
                    "error": "两端之一没有三角面（求值后为空）",
                    "a_tris": (mdA or {}).get("tris_n"), "b_tris": (mdB or {}).get("tris_n"),
                    "skipped": (mdA or {}).get("skipped"), "units": ub})
-    if mdA["tris_n"] > MATE_MAX_TRIS or mdB["tris_n"] > MATE_MAX_TRIS:
+    if MATE_MAX_TRIS > 0 and (mdA["tris_n"] > MATE_MAX_TRIS or mdB["tris_n"] > MATE_MAX_TRIS):
         return _j({"ok": False, "verdict": "unresolved", "connection": conn_id, "measured": False,
                    "error": "网格过大，不判（大网格一律 analyzed=false，绝不静默降级）",
                    "a_tris": mdA["tris_n"], "b_tris": mdB["tris_n"], "limit": MATE_MAX_TRIS, "units": ub})
@@ -1523,7 +1526,7 @@ def c_interference_report(scope=None, use_bvh=True, limit=60, declared_ok=True,
         if not ma or not mb or ma["tris_n"] == 0 or mb["tris_n"] == 0:
             skipped.append({"a": oa.name, "b": ob_.name, "why": "一端没有三角面"})
             continue
-        if ma["tris_n"] > MATE_MAX_TRIS or mb["tris_n"] > MATE_MAX_TRIS:
+        if MATE_MAX_TRIS > 0 and (ma["tris_n"] > MATE_MAX_TRIS or mb["tris_n"] > MATE_MAX_TRIS):
             skipped.append({"a": oa.name, "b": ob_.name, "why": "网格过大（> %d 面）不判" % MATE_MAX_TRIS})
             continue
         checked += 1
@@ -1721,9 +1724,49 @@ def c_ops():
 
 import sys as _sys
 _K = _sys.modules.get("dsh_rt_kernel")
+def c_selftest():
+    # 契约层自检：复位 -> 登记一个真组件 -> 状态可读 -> 复位（登记簿能收能清）
+    import json
+
+    def _d(x):
+        return json.loads(x) if isinstance(x, str) else x
+
+    import bpy
+    import bmesh as _bm
+    ev = {}
+    nm = "__dsh_ct_cube"
+    try:
+        c_reset()
+        me = bpy.data.meshes.new(nm)
+        ob = bpy.data.objects.new(nm, me)
+        bpy.context.scene.collection.objects.link(ob)
+        bm = _bm.new()
+        _bm.ops.create_cube(bm, size=1.0)
+        bm.to_mesh(me)
+        bm.free()
+        r = _d(c_register_component("cube1", objects=[nm], tags=["selftest"]))
+        ev["register_ok"] = isinstance(r, dict) and r.get("ok") is not False
+        st = _d(c_status())
+        ev["status_dict"] = isinstance(st, dict)
+        ev["components_counted"] = int(st.get("components") or 0) >= 1
+        c_reset()
+        ev["reset_ok"] = True
+        return _j({"ok": all(v is True for v in ev.values()), "evidence": ev})
+    except Exception as e:
+        return _j({"ok": False, "evidence": ev, "error": "%s: %s" % (type(e).__name__, str(e)[:200])})
+    finally:
+        o = bpy.data.objects.get(nm)
+        if o is not None:
+            me2 = o.data
+            bpy.data.objects.remove(o, do_unlink=True)
+            if me2 is not None and me2.users == 0:
+                bpy.data.meshes.remove(me2, do_unlink=True)
+
+
+
 if _K is not None:
-    _K.dsh_contract_api = {
-        "dispatch": c_dispatch,
+    _K.dsh_contract_api = _KIT.Api({
+        "dispatch": _KIT.wrap_dispatch(c_dispatch, {"selftest": c_selftest}),
         "version": CONTRACT_VERSION,
         "reset": c_reset, "help": c_help, "status": c_status,
         "register_component": c_register_component, "register_connection": c_register_connection,
@@ -1736,4 +1779,16 @@ if _K is not None:
         "fingerprint": c_fingerprint,
         "mate_check": c_mate_check, "fit_help": c_fit_help,
         "interference_report": c_interference_report,
-    }
+        "selftest": c_selftest})
+
+# ---- v0.9.1（93-B1/B2）：API 可调用化（换成 dict 子类实例，返回已解析对象）----
+# 背景：K.dsh_x_api 原来是普通 dict → 进程内 api(args) 报 TypeError: 'dict' object is not callable；
+# 且 dispatch 返回 JSON 字符串，调用方还得自己 json.loads。
+# 现在：api("op", {…}) 或 api({…}) → dict；api["dispatch"](op, json_str) 仍返回 str（引擎契约不变）。
+# 注意：dict 是静态类型，不能对已有实例做 __class__ 赋值（实测 TypeError），所以换成一个新实例。
+_DshApi = _KIT.Api  # 共享内核（尾部注册行无需改）
+import sys as _sys_api
+_K_api = _sys_api.modules.get("dsh_rt_kernel")
+if _K_api is not None and isinstance(getattr(_K_api, "dsh_contract_api", None), dict) \
+        and not isinstance(getattr(_K_api, "dsh_contract_api", None), _DshApi):
+    _K_api.dsh_contract_api = _DshApi(_K_api.dsh_contract_api)

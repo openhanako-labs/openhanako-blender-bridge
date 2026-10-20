@@ -16,10 +16,13 @@ from collections import defaultdict
 PERF_VERSION = 1
 
 
-def _j(o):
-    return json.dumps(o, ensure_ascii=False, default=str)
+import sys as _sys_kit
+_KIT = getattr(_sys_kit.modules.get("dsh_rt_kernel"), "dsh_kit", None)
+if _KIT is None:
+    raise RuntimeError("perf 需要共享内核 K.dsh_kit（由 KERNEL_BOOTSTRAP 注入）")
 
 
+_j = _KIT.j  # 共享内核（原自带实现已删，见 S1）
 def _kernel():
     import sys
     return sys.modules.get("dsh_rt_kernel")
@@ -319,10 +322,33 @@ def dsh_perf_help():
 
 import sys as _sys
 _K = _sys.modules.get("dsh_rt_kernel")
-if _K is not None:
-    _K.dsh_perf_api = {"version": PERF_VERSION, "status": (lambda *a, **kw: dsh_perf_status(*a, **kw)), "apply": dsh_perf_apply,
-                       "revert": dsh_perf_revert, "analyze": dsh_perf_analyze, "help": dsh_perf_help,
-                       "opt_analyze": dsh_opt_analyze, "opt_join": dsh_opt_join}
+def dsh_perf_selftest():
+    # 渲染性能自检。v1.0.1 起本模块尾部按 kit 统一约定注册 K.dsh_perf_api；
+    # 这里既验模块级函数，也验 API 真的挂上了（api_registered_by_module 已是硬判据）。
+    import json
+
+    def _d(x):
+        return json.loads(x) if isinstance(x, str) else x
+
+    ev = {}
+    try:
+        _g = globals()
+        st_fn = _g.get("dsh_perf_status")
+        ap_fn = _g.get("dsh_perf_apply")
+        rv_fn = _g.get("dsh_perf_revert")
+        ev["ops_present"] = all(callable(x) for x in (st_fn, ap_fn, rv_fn))
+        ev["api_registered_by_module"] = isinstance(getattr(_K, "dsh_perf_api", None), dict)  # 如实标注现状
+        if callable(st_fn):
+            ev["status_runs"] = isinstance(_d(st_fn()), dict)
+        if callable(ap_fn) and callable(rv_fn):
+            ev["apply_runs"] = isinstance(_d(ap_fn(samples=64, persistent=True)), dict)
+            ev["revert_runs"] = isinstance(_d(rv_fn()), dict)
+        _checks = ["ops_present", "status_runs", "apply_runs", "revert_runs", "api_registered_by_module"]
+        ok = all(ev.get(k) is True for k in _checks if k in ev)
+        # api_registered_by_module 是硬判据：模块没注册 API 就直接判失败（v1.0.1 的教训）
+        return _j({"ok": bool(ok), "evidence": ev})
+    except Exception as e:
+        return _j({"ok": False, "evidence": ev, "error": "%s: %s" % (type(e).__name__, str(e)[:200])})
 
 
 def _dsh_perf_engine_mode():
@@ -403,3 +429,21 @@ def _dsh_perf_apply_eevee(args=None):
                         "skipped_cycles_only": ["persistent_data", "denoising_use_gpu(OptiX)",
                                                 "auto_tile off", "samples cap"],
                         "note": "当前引擎是 EEVEE：Cycles 专属项不适用，已显式跳过"}, ensure_ascii=False)
+
+# ---- 注册 K.dsh_perf_api（v1.0.1 修）----------------------------------------
+# 起因：这里原本只有一段「把**已存在**的 K.dsh_perf_api 包成 Api」的 shim，
+# 但全文件没有任何地方真正创建过它；而引擎按 `K.dsh_perf_api[op](…)` 调用
+# ⇒ blender_rt_perf / blender_rt_opt 的**每一个 op** 都报
+#     AttributeError: module 'dsh_rt_kernel' has no attribute 'dsh_perf_api'
+# （内核里只剩引擎写的 dsh_perf_api_fp 内容指纹，看着像"注册过"，实际没有。）
+# 改为按 kit.py 的统一约定注册（与 qc / clearance / pipeline 同形）。
+if _K is not None:
+    _K.dsh_perf_api = _KIT.register("perf", PERF_VERSION, {
+        "status": dsh_perf_status,
+        "analyze": dsh_perf_analyze,
+        "apply": dsh_perf_apply,
+        "revert": dsh_perf_revert,
+        "help": dsh_perf_help,
+        "opt_analyze": dsh_opt_analyze,
+        "opt_join": dsh_opt_join,
+    }, extra={"selftest": dsh_perf_selftest})

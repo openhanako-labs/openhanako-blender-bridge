@@ -36,10 +36,13 @@ import bpy, json, math, os, time
 PLAN_VERSION = 1
 
 
-def _j(o):
-    return json.dumps(o, ensure_ascii=False, default=str)
+import sys as _sys_kit
+_KIT = getattr(_sys_kit.modules.get("dsh_rt_kernel"), "dsh_kit", None)
+if _KIT is None:
+    raise RuntimeError("planner 需要共享内核 K.dsh_kit（由 KERNEL_BOOTSTRAP 注入）")
 
 
+_j = _KIT.j  # 共享内核（原自带实现已删，见 S1）
 def _kernel():
     import sys
     return sys.modules.get("dsh_rt_kernel")
@@ -413,10 +416,41 @@ def p_ops():
 
 import sys as _sys
 _K = _sys.modules.get("dsh_rt_kernel")
+def p_selftest():
+    # 规划器自检：status / diag / graph 都要给结构化回执
+    import json
+
+    def _d(x):
+        return json.loads(x) if isinstance(x, str) else x
+
+    ev = {}
+    try:
+        ev["status_dict"] = isinstance(_d(p_status()), dict)
+        ev["diag_dict"] = isinstance(_d(p_diag()), dict)
+        ev["graph_dict"] = isinstance(_d(p_graph()), dict)
+        return _j({"ok": all(x is True for x in ev.values()), "evidence": ev})
+    except Exception as e:
+        return _j({"ok": False, "evidence": ev, "error": "%s: %s" % (type(e).__name__, str(e)[:200])})
+
+
+
 if _K is not None:
-    _K.dsh_plan_api = {"version": PLAN_VERSION, "dispatch": p_dispatch,
+    _K.dsh_plan_api = _KIT.Api({"version": PLAN_VERSION, "dispatch": _KIT.wrap_dispatch(p_dispatch, {"selftest": p_selftest}),
                        "load": p_load, "diag": p_diag, "order": p_order,
-                       "build": p_build, "graph": p_graph, "status": p_status, "help": p_help}
+                       "build": p_build, "graph": p_graph, "status": p_status, "help": p_help,
+        "selftest": p_selftest})
     # 给契约层补一个"规划器诊断"入口（S1 与 S3 联动）
     if hasattr(_K, "dsh_contract_api"):
         _K.dsh_contract_api["plan_diag"] = p_diag
+
+# ---- v0.9.1（93-B1/B2）：API 可调用化（换成 dict 子类实例，返回已解析对象）----
+# 背景：K.dsh_x_api 原来是普通 dict → 进程内 api(args) 报 TypeError: 'dict' object is not callable；
+# 且 dispatch 返回 JSON 字符串，调用方还得自己 json.loads。
+# 现在：api("op", {…}) 或 api({…}) → dict；api["dispatch"](op, json_str) 仍返回 str（引擎契约不变）。
+# 注意：dict 是静态类型，不能对已有实例做 __class__ 赋值（实测 TypeError），所以换成一个新实例。
+_DshApi = _KIT.Api  # 共享内核（尾部注册行无需改）
+import sys as _sys_api
+_K_api = _sys_api.modules.get("dsh_rt_kernel")
+if _K_api is not None and isinstance(getattr(_K_api, "dsh_planner_api", None), dict) \
+        and not isinstance(getattr(_K_api, "dsh_planner_api", None), _DshApi):
+    _K_api.dsh_planner_api = _DshApi(_K_api.dsh_planner_api)

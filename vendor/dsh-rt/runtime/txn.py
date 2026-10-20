@@ -3,10 +3,22 @@
 
 API 挂 K.dsh_txn_api。设计取舍（按外部反馈"没有事务/回滚"落地）：
 
-  文件级  snapshot(label) / restore(label)
+  文件级  snapshot(label) / restore(label, into="auto", backup=True)
       snapshot 用 bpy.ops.wm.save_as_mainfile(copy=True) —— **不改当前 filepath**，
-      文件落在 <K.out_dir>/snapshots/<label>.blend；restore 用 open_mainfile（**会丢掉当前未保存状态**）。
+      文件落在 <K.out_dir>/snapshots/<label>.blend，并把"取快照时的 filepath"记进记录。
       适用："整个场景推倒重来之前先留个点"；代价：MB 级写盘（大场景明显）。
+
+      restore 的 filepath 语义（v4 修，外部反馈：老版本 restore 之后"一保存就写进快照目录"）：
+        open_mainfile(快照) 会把**整个会话**搬到快照文件上，bpy.data.filepath 随之变成快照路径 ——
+        原文件其实一直在原地没动，但之后任何保存都会落进 snapshots/，语义意外。现在：
+        · into="auto"（默认）：载入快照后**回到快照的出处文件**（记录里的 filepath，其次当前文件），
+          即"恢复进原文件"；会话仍挂在自己的工程上，保存就存回原处。
+        · into="snapshot"：非破坏模式 —— 只载入快照、**一个字节都不写原文件**，
+          会话明确停在快照路径上，回执给 next_save_goes_to 提醒保存会落哪。
+        · into="original"：要求必须有可回写的原文件，没有就 ok:false（不静默降级）。
+        兜不到目标（未保存场景 / 快照与会话都在快照目录里）时**不乱写**：保持快照路径 + 明确告警。
+        backup=True（默认）：restore 之前自动留一份 pre_restore 快照（restore 会丢当前未保存状态）；
+        会话脏且要覆盖原文件时，另存一份原文件的**磁盘副本**（_pre_restore_file_*）—— 两者都可 list/restore 回来。
 
   对象级  mark(label, objects=[...]) / revert(label)
       只把对象的 transform / 材质槽 / 可见性 / 修改器参数记进内存（JSON 友好），revert 就地回写。
@@ -34,7 +46,8 @@ API 挂 K.dsh_txn_api。设计取舍（按外部反馈"没有事务/回滚"落�
     K.dsh_txn_api["mark"]("iter7", ["Cube", "Wheel_L"])
     ... 改动 ...
     K.dsh_txn_api["revert"]("iter7")     # 快速回到 mark 时的状态
-    K.dsh_txn_api["restore"]("before_join")
+    K.dsh_txn_api["restore"]("before_join")                  # 默认：载入快照并写回原文件（可 undo）
+    K.dsh_txn_api["restore"]("before_join", into="snapshot") # 只看一眼：非破坏，不碰原文件
 
     # 待定编辑（#12）：改 → 复核 → 接受 / 撤销
     K.dsh_txn_api["edit_begin"]("tenon_12mm", "edit", ["Backrest"])
@@ -45,9 +58,10 @@ API 挂 K.dsh_txn_api。设计取舍（按外部反馈"没有事务/回滚"落�
 import bpy
 import json
 import os
+import shutil
 import time
 
-TXN_VERSION = 3
+TXN_VERSION = 4
 
 # 对象级回滚的边界（原文照抄给调用者，别让人以为 revert 能回去拓扑）
 _TXN_BOUNDARY = ("对象级快照/回滚只覆盖 transform / 材质槽 / 可见性 / 修改器开关；"
@@ -57,6 +71,12 @@ _TXN_BOUNDARY = ("对象级快照/回滚只覆盖 transform / 材质槽 / 可见
 _TXN_REVERT_FLOOR = 2
 # 复核 kind 的已知取值（非标准 kind 仍记账，但会回一句"非标准"）
 _TXN_CHECK_KINDS = ("audit", "qc", "measure", "render", "read", "compare", "other")
+
+
+import sys as _sys_kit
+_KIT = getattr(_sys_kit.modules.get("dsh_rt_kernel"), "dsh_kit", None)
+if _KIT is None:
+    raise RuntimeError("txn 需要共享内核 K.dsh_kit（由 KERNEL_BOOTSTRAP 注入）")
 
 
 def _txn_j(o):
@@ -99,9 +119,60 @@ def _txn_now():
 
 # ---------------------------------------------------------------- 文件级
 
+def _txn_snap_dir():
+    return os.path.join(_txn_out_dir(), "snapshots")
+
+
+def _txn_under(path, d):
+    """path 是否落在目录 d 里 —— restore 的回写目标不许是插件自己造的快照目录。"""
+    try:
+        p = os.path.normcase(os.path.abspath(str(path)))
+        dd = os.path.normcase(os.path.abspath(str(d)))
+        return p == dd or p.startswith(dd + os.sep)
+    except Exception:
+        return False
+
+
+def _txn_same_path(a, b):
+    try:
+        return os.path.normcase(os.path.abspath(str(a))) == os.path.normcase(os.path.abspath(str(b)))
+    except Exception:
+        return False
+
+
+def _txn_reg_snap(label, path, note, auto=False, ms=None):
+    """把一个已落盘的 .blend 登记进快照清单（list/prune/restore 都认它）。"""
+    st = _txn_store()
+    rec = {"label": label, "path": path,
+           "bytes": os.path.getsize(path) if os.path.isfile(path) else None,
+           "ms": ms, "objects": len(bpy.data.objects), "note": str(note), "t": _txn_now(),
+           "auto": bool(auto), "filepath": str(bpy.data.filepath or "")}
+    st["snapshots"][label] = rec
+    return rec
+
+
+def _txn_backup_now(label, note):
+    """把**当前会话状态**存成一份快照（restore 之前的 undo 点）。"""
+    d = _txn_snap_dir()
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, label + ".blend")
+    t0 = time.perf_counter()
+    bpy.ops.wm.save_as_mainfile(filepath=path, copy=True)
+    return _txn_reg_snap(label, path, note, auto=True, ms=int((time.perf_counter() - t0) * 1000))
+
+
+def _txn_backup_file(src, label, note):
+    """把**磁盘上的原文件**另存一份（会话脏时它和内存态不是一回事，覆盖前必须留底）。"""
+    d = _txn_snap_dir()
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, label + ".blend")
+    shutil.copy2(src, path)
+    return _txn_reg_snap(label, path, note, auto=True, ms=0)
+
+
 def t_snapshot(label=None, note=""):
     st = _txn_store()
-    d = os.path.join(_txn_out_dir(), "snapshots")
+    d = _txn_snap_dir()
     os.makedirs(d, exist_ok=True)
     name = str(label) if label else time.strftime("snap_%Y%m%d_%H%M%S")
     path = os.path.join(d, name + ".blend")
@@ -112,12 +183,35 @@ def t_snapshot(label=None, note=""):
         return _txn_j({"ok": False, "error": "%s: %s" % (type(e).__name__, e), "path": path})
     ms = int((time.perf_counter() - t0) * 1000)
     rec = {"label": name, "path": path, "bytes": os.path.getsize(path) if os.path.isfile(path) else None,
-           "ms": ms, "objects": len(bpy.data.objects), "note": str(note), "t": _txn_now()}
+           "ms": ms, "objects": len(bpy.data.objects), "note": str(note), "t": _txn_now(),
+           # v4：记下"取快照时的 filepath" —— restore 按它把会话放回原文件（之后开过别的文件也认得出）
+           "filepath": str(bpy.data.filepath or ""), "unsaved": (not bpy.data.filepath)}
     st["snapshots"][name] = rec
     return _txn_j({"ok": True, "snapshot": rec, "total": len(st["snapshots"])})
 
 
-def t_restore(label):
+_TXN_INTO = ("auto", "original", "snapshot")
+
+
+def _txn_restore_target(rec, before, snap_dir):
+    """回写目标：优先快照的出处文件，其次会话当前文件；两者都在快照目录里 → 没有目标。
+
+    顺序有讲究：先看快照记的出处。用户可能已经开了**别的**工程再 restore ——
+    那时把快照内容写进"当前文件"等于毁掉另一个工程，写回出处才对。
+    """
+    for cand, src in ((str(rec.get("filepath") or ""), "snapshot_filepath"),
+                      (str(before or ""), "session_filepath")):
+        if cand and not _txn_under(cand, snap_dir):
+            return cand, src
+    return "", ""
+
+
+def t_restore(label, into="auto", backup=True):
+    """载入快照。into="auto"（默认）载入后回到快照的出处文件；"snapshot" 只载入不写原文件。
+
+    v4 修的是 filepath 语义：老版本 open_mainfile 之后会话挂在 snapshots/<label>.blend 上，
+    用户一保存就写进快照目录（原文件明明还在）。见文件头"文件级"一节。
+    """
     st = _txn_store()
     rec = st["snapshots"].get(str(label))
     if not rec:
@@ -125,14 +219,83 @@ def t_restore(label):
     path = rec["path"]
     if not os.path.isfile(path):
         return _txn_j({"ok": False, "error": "快照文件不存在: %s" % path})
+
+    into = str(into or "auto").strip().lower()
+    if into not in _TXN_INTO:
+        return _txn_j({"ok": False, "error": "into 只认 auto / original / snapshot", "given": into,
+                       "into_allowed": list(_TXN_INTO)})
+
+    before = str(bpy.data.filepath or "")
+    dirty = bool(getattr(bpy.data, "is_dirty", False))
+    snap_dir = _txn_snap_dir()
+    target, target_src = ("", "") if into == "snapshot" else _txn_restore_target(rec, before, snap_dir)
+    if into == "original" and not target:
+        return _txn_j({"ok": False,
+                       "error": "没有可回写的原文件（快照记录与会话都没有非快照路径）；要看一眼用 into='snapshot'",
+                       "filepath_before": before, "snapshot_filepath": str(rec.get("filepath") or "")})
+
+    # ① 安全网：restore 会丢掉当前未保存状态 —— 先留 undo 点
+    bk, bk_err, disk_bk, disk_err = None, None, None, None
+    if backup:
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        try:
+            bk = _txn_backup_now("_pre_restore_%s_%s" % (str(label), stamp),
+                                 "restore '%s' 前自动备份（会话被替换前的状态）" % label)
+        except Exception as e:
+            bk_err = "%s: %s" % (type(e).__name__, e)
+        # 会话脏 ⇒ 内存态 ≠ 磁盘原文件；要覆盖原文件的话，磁盘那份也得留底
+        if target and dirty and os.path.isfile(target):
+            try:
+                disk_bk = _txn_backup_file(target, "_pre_restore_file_%s_%s" % (str(label), stamp),
+                                           "原文件磁盘副本（restore 覆盖前）")
+            except Exception as e:
+                disk_err = "%s: %s" % (type(e).__name__, e)
+
+    # ② 载入快照
     t0 = time.perf_counter()
     try:
         bpy.ops.wm.open_mainfile(filepath=path)
     except Exception as e:
-        return _txn_j({"ok": False, "error": "%s: %s" % (type(e).__name__, e), "path": path})
-    ms = int((time.perf_counter() - t0) * 1000)
-    return _txn_j({"ok": True, "restored": rec, "ms": ms, "objects": len(bpy.data.objects),
-               "warning": "已用快照替换当前文件；restore 之前的未保存修改已丢失", "filepath": bpy.data.filepath})
+        return _txn_j({"ok": False, "error": "%s: %s" % (type(e).__name__, e), "path": path,
+                       "filepath_before": before, "backup": bk, "backup_error": bk_err})
+    loaded_ms = int((time.perf_counter() - t0) * 1000)
+
+    # ③ 把会话放回原文件（into="snapshot" 时不做，只把"保存会落哪"讲清楚）
+    wrote, write_err = False, None
+    if target:
+        try:
+            bpy.ops.wm.save_as_mainfile(filepath=target)
+            wrote = True
+        except Exception as e:
+            write_err = "%s: %s" % (type(e).__name__, e)
+    after = str(bpy.data.filepath or "")
+    note = []
+    if wrote:
+        note.append("已用快照恢复并把会话放回原文件 %s（之后的保存落回这里，不再写进快照目录）" % target)
+        if target_src == "snapshot_filepath" and before and not _txn_same_path(before, target):
+            note.append("注意：恢复前会话挂在 %s，已切回快照的出处文件" % before)
+        if bk is None:
+            note.append("⚠ 未能留下 restore 前的备份（%s）—— 快照前的未保存改动已丢失" % (bk_err or "backup=False"))
+        else:
+            note.append("restore 前的状态已备份为快照 %s（可 restore 回来）" % bk.get("label"))
+        if disk_bk:
+            note.append("原文件磁盘副本：%s" % disk_bk.get("label"))
+    else:
+        note.append("快照已载入，但**没有**可回写的原文件 —— 当前会话挂在快照文件上，"
+                    "现在保存会写进快照目录（%s）；要落到自己的工程请显式另存" % (after or path))
+        if bk is not None:
+            note.append("restore 前的状态已备份为快照 %s" % bk.get("label"))
+
+    out = {"ok": True, "restored": rec, "ms": loaded_ms, "objects": len(bpy.data.objects),
+           "into": into, "wrote_to_original": wrote, "target": (target or None),
+           "target_source": (target_src or None), "filepath_before": before,
+           "filepath": after, "next_save_goes_to": after,
+           "backup": bk, "backup_error": bk_err, "on_disk_backup": disk_bk, "on_disk_backup_error": disk_err,
+           "warning": " ".join(note)}
+    if write_err:
+        out["ok"] = False
+        out["error"] = "快照已载入，但写回原文件失败：%s（会话仍在快照路径 %s）" % (write_err, after)
+    return _txn_j(out)
 
 
 def t_list():
@@ -470,9 +633,13 @@ def t_edit_status():
 def t_help():
     return _txn_j({
         "version": TXN_VERSION,
-        "file_level": {"snapshot": "snapshot(label=None, note='') → 存 <out_dir>/snapshots/<label>.blend（copy=True，不动当前 filepath）",
-                       "restore": "restore(label) → open_mainfile（会丢掉当前未保存状态）",
-                       "list": "list() → 快照 + mark 清单", "prune": "prune(keep=5) → 只留最近 N 个快照"},
+        "file_level": {"snapshot": "snapshot(label=None, note='') → 存 <out_dir>/snapshots/<label>.blend（copy=True，不动当前 filepath），并记下当时的 filepath",
+                       "restore": "restore(label, into='auto', backup=True) → 载入快照。"
+                                  "into='auto'（默认）载入后回到快照的出处文件（恢复进原文件，保存不再写进快照目录）；"
+                                  "into='snapshot' 非破坏，只看一眼、一个字节都不写原文件；"
+                                  "into='original' 要求必须能回写，否则 ok:false。"
+                                  "backup=True 先在 restore 前留 pre_restore 快照（会话脏且要覆盖原文件时另留磁盘副本）",
+                       "list": "list() → 快照 + mark 清单", "prune": "prune(keep=5) → 只留最近 N 个快照（自动备份也算普通快照，会被 prune 掉）"},
         "object_level": {"mark": "mark(label, objects=None) → 记 transform/材质/可见性/修改器开关",
                          "revert": "revert(label, strict=False) → 就地回写；拓扑变过的对象会被跳过并报告",
                          "marks": "marks() → 列出 mark", "drop": "drop(label) → 删掉 mark"},
@@ -518,9 +685,72 @@ def t_ops():
 
 import sys as _sys
 _txn_K = _sys.modules.get("dsh_rt_kernel")
+def t_selftest():
+    # 事务自检：mark -> 真改对象 -> revert 必须把变换还原
+    import json
+
+    def _d(x):
+        return json.loads(x) if isinstance(x, str) else x
+
+    import bpy
+    import bmesh as _bm
+    ev = {}
+    nm = "__dsh_tx_cube"
+    lb = "__dsh_selftest_mark"
+    try:
+        me = bpy.data.meshes.new(nm)
+        ob = bpy.data.objects.new(nm, me)
+        bpy.context.scene.collection.objects.link(ob)
+        bm = _bm.new()
+        _bm.ops.create_cube(bm, size=1.0)
+        bm.to_mesh(me)
+        bm.free()
+        ob.location = (0.0, 0.0, 0.0)
+        _d(t_mark(lb, [nm]))
+        ob.location = (5.0, 5.0, 5.0)
+        try:
+            bpy.context.view_layer.update()
+        except Exception:
+            pass
+        ev["changed"] = abs(bpy.data.objects[nm].location[0] - 5.0) < 1e-4
+        r = _d(t_revert(lb))
+        ev["revert_ok"] = isinstance(r, dict) and r.get("ok") is not False
+        try:
+            bpy.context.view_layer.update()
+        except Exception:
+            pass
+        loc = bpy.data.objects[nm].location
+        ev["restored"] = abs(loc[0]) < 1e-4 and abs(loc[2]) < 1e-4
+        ev["marks_listable"] = isinstance(_d(t_list()), dict)
+        return _KIT.j({"ok": all(x is True for x in ev.values()), "evidence": ev, "loc": [round(float(q), 3) for q in loc]})
+    except Exception as e:
+        return _KIT.j({"ok": False, "evidence": ev, "error": "%s: %s" % (type(e).__name__, str(e)[:200])})
+    finally:
+        o = bpy.data.objects.get(nm)
+        if o is not None:
+            me2 = o.data
+            bpy.data.objects.remove(o, do_unlink=True)
+            if me2 is not None and me2.users == 0:
+                bpy.data.meshes.remove(me2, do_unlink=True)
+
+
+
 if _txn_K is not None:
-    _txn_K.dsh_txn_api = {"version": TXN_VERSION, "dispatch": t_dispatch, "snapshot": t_snapshot, "restore": t_restore,
+    _txn_K.dsh_txn_api = _KIT.Api({"version": TXN_VERSION, "dispatch": _KIT.wrap_dispatch(t_dispatch, {"selftest": t_selftest}), "snapshot": t_snapshot, "restore": t_restore,
                       "list": t_list, "prune": t_prune, "mark": t_mark, "revert": t_revert,
                       "marks": t_marks, "drop": t_drop, "help": t_help,
                       "edit_begin": t_edit_begin, "edit_check": t_edit_check, "edit_accept": t_edit_accept,
-                      "edit_revert": t_edit_revert, "edit_status": t_edit_status}
+                      "edit_revert": t_edit_revert, "edit_status": t_edit_status,
+        "selftest": t_selftest})
+
+# ---- v0.9.1（93-B1/B2）：API 可调用化（换成 dict 子类实例，返回已解析对象）----
+# 背景：K.dsh_x_api 原来是普通 dict → 进程内 api(args) 报 TypeError: 'dict' object is not callable；
+# 且 dispatch 返回 JSON 字符串，调用方还得自己 json.loads。
+# 现在：api("op", {…}) 或 api({…}) → dict；api["dispatch"](op, json_str) 仍返回 str（引擎契约不变）。
+# 注意：dict 是静态类型，不能对已有实例做 __class__ 赋值（实测 TypeError），所以换成一个新实例。
+_DshApi = _KIT.Api  # 共享内核（尾部注册行无需改）
+import sys as _sys_api
+_K_api = _sys_api.modules.get("dsh_rt_kernel")
+if _K_api is not None and isinstance(getattr(_K_api, "dsh_txn_api", None), dict) \
+        and not isinstance(getattr(_K_api, "dsh_txn_api", None), _DshApi):
+    _K_api.dsh_txn_api = _DshApi(_K_api.dsh_txn_api)
