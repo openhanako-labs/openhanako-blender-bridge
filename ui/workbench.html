@@ -94,20 +94,15 @@
                 </div>
                 <pre class="wb-notes" id="d-notes" hidden></pre>
 
-                <div class="sec">意见 <span class="c" id="d-fbcount"></span></div>
+                <div class="sec">上一版留下的意见 <span class="c" id="d-fbcount"></span></div>
                 <pre class="wb-fb" id="d-fb" hidden></pre>
                 <div class="mhint" id="d-fb-empty">还没写过意见</div>
-                <!-- 写意见的入口。
-                     后端 /runs/feedback 一直就在，只是前端从没接上——
-                     代码里 $('d-note')/$('d-hint') 早就引用了这两个 id，
-                     但 HTML 里没有，于是每次渲染都抛 TypeError。
-                     这里把缺的那半补上。 -->
-                <textarea id="d-note" rows="2" placeholder="这一版哪儿不对 / 下次要改什么…"></textarea>
-                <div class="wb-fbrow">
-                  <span class="mhint" id="d-hint">回车提交（Shift+回车换行）</span>
-                  <span class="sp"></span>
-                  <button class="b mini" id="d-fb-send" type="button">记下</button>
-                </div>
+                <!-- 意见只读展示。
+                     原样这里还有一个可输入的 textarea（id=d-note）+「记下」按钮，
+                     跟底部常驻栏的「让助手做什么」是同一件事的两个入口：
+                     dispatch() 干的第一件事就是把底部那段话写进 /runs/feedback。
+                     两个框做同一件事，只会让人不知道该写哪一个。已删。
+                     要提意见就写下面那个——它同时存档并真的发出去。 -->
               </div>
             </div>
           </div>
@@ -260,12 +255,14 @@
 
     <!-- ── 派活栏 ──
          常驻在底部：这是这个 App 的主要动作，不是某个标签页的附属。
-         它做的事跟「记录意见」不同——意见存到这一版上给下一版当输入；
-         派活是把要求真的送进会话，让助手开始干。 -->
+         它同时干两件事（以前拆在两个输入框里，现已合并）：
+           ① 把这段话存在这一版上——下一版会带着它做
+           ② 把同一段话真的发进助手会话——他会开始干
+         两个框做同一件事时，人不知道该写哪个；只留这一个。 -->
     <div class="wb-compose" id="compose">
       <div class="wb-compose-in">
         <div class="wb-compose-lb">
-          让助手做什么 <u>— 会带上当前这一版的目录与之前的意见</u>
+          让助手做什么 <u>— 会存进这一版的意见，同时真的发给他开工</u>
         </div>        <textarea id="d-brief" rows="2" placeholder="例如：炮口再长 12 厘米，主炮仰角降到 15°；出完图顺手和上一版比一次"></textarea>
         <div class="wb-compose-row">
           <label class="wb-pick">

@@ -136,7 +136,7 @@
     },
     {
       id: "dispatch",
-      summary: "【派活】把一条要求交给某个助手，在他自己的会话里开工。参数：brief（要做什么，必填）、agent（发给谁，必填——不替你猜）、model（用哪个模型，空=不换）、provider（与 model 成对，换模型时必填）、runId（带上一版产出做上下文）。\n先用 models 看能发给谁、能选哪些模型。返回会话、是否新建会话、模型换没换成。",
+      summary: "【派活】把一条要求交给某个助手，在他自己的会话里开工。参数：op=start（默认）/status，brief（要做什么，必填）、agent（发给谁，必填——不替你猜）、model（用哪个模型，空=不换）、provider（与 model 成对，换模型时必填）、runId（带上一版产出做上下文）、taskId（op=status 查结果用）。\n先用 models 看能发给谁、能选哪些模型。\n★ 提交即返回：很快的情况直接给结果；慢的给 taskId，用 op=status 查——**先查再重发**，重发会让助手收到两遍。",
     },
     {
       id: "models",
@@ -317,6 +317,8 @@
     noCache: { type: "boolean", description: "runs op=views：true 则无视缓存重拍（同方位的旧图会先被顶掉）。默认 false。" },
     // 下面几个是 dispatch / models 用的
     brief: { type: "string", description: "派活：要做什么（必填）。写成对那个人说得清的一句话。" },
+    taskId: { type: "string", description: "dispatch op=status：start 时返回的任务号。" },
+    sessionId: { type: "string", description: "dispatch：直接发到这个会话（可空；不传就先找本 App 建的活跃会话，没有才新建）。" },
     agent: { type: "string", description: "派活：发给哪个助手（必填，用 agent id）。先用 models op=agents 拿。不传会明确报错——不替你猜。" },
     model: { type: "string", description: "派活：用哪个模型（可空 = 不换，用那个助手本来的）。用 models op=models 拿 id。" },
     provider: { type: "string", description: "派活：模型的 provider（跟 model 成对，换模型时要一起给）。" },
@@ -363,7 +365,7 @@
     preset: ["op", "args", "name", "data", "kind", "tags", "note", "path", "overwrite", "dry_run", "names"],
     service: ["op", "path"],
     connect: [],
-    dispatch: ["brief", "agent", "model", "provider", "runId"],
+    dispatch: ["op", "brief", "agent", "model", "provider", "runId", "taskId", "sessionId"],
     models: ["op"],
     runs: ["op", "id", "label", "actionName", "note", "notes", "summary", "tag", "keep", "dryRun", "limit", "baseRun", "file", "files", "kind", "name", "views", "viewAngles", "model", "scene", "snapshot", "path", "script", "noCache"],    lease: ["op", "holder", "ttlMs", "force", "renewOnly"],    worker: ["op", "code", "timeoutMs", "file", "outdir", "purgePrefix"],
     job: ["op", "id", "code", "file", "outdir", "tail", "timeoutMs"],
@@ -392,6 +394,7 @@
     object: "get（读单个物体，默认）/ add（新建基础体：cube/sphere/cylinder/cone/torus/plane/monkey）/ hide（隐藏，视口与渲染同时关）/ show（重新显示）/ hidden_list（列出当前藏起来的）/ remove（移入回收站，可恢复）/ restore（从回收站捞回）/ rename / duplicate / trash_list / purge（真删回收站，不可恢复）",
     lease: "who / acquire / release / renew",
     models: "agents / models",
+    dispatch: "start（默认，提交即返回）/ status（查结果，需 taskId）",
     worker: "start / exec / status / stop / restart",
     job: "start / status / collect / kill / list",
   };

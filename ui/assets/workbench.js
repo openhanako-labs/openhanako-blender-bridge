@@ -323,10 +323,9 @@ async function selectRun(id) {
   if (fbEmpty) fbEmpty.hidden = !!run.feedback;
   const fbc = $('d-fbcount');
   if (fbc) fbc.textContent = n ? String(n) : '';
-
-  $('d-note').value = '';
-  $('d-hint').textContent = '回车提交（Shift+回车换行）';
 }
+// 注：这里原来还有一行清空 d-note 与重置 d-hint 的代码。
+// 那两个 id 随独立意见框一起删了——保留就会在每次选中产出时抛 TypeError。
 
 // 备注盘上存的是 markdown，但这里只是一块窄栏，不是渲染器。
 // 直接把 # ## - 露出来，在 208px 宽里就是没洗的菜。
@@ -447,46 +446,30 @@ $('d-notes-toggle').onclick = () => {
   if (t) t.textContent = notesOpen ? '收起' : '展开';
 };
 
-// ── 记意见 ──
-// 与“派活”不是同一件事：
-//   意见 = 存到这一版上，给下一版当输入（存在磁盘上，比浏览器活得久）
+// ── 意见展示（不再有独立输入框）──
+//
+// 曾经这里有一个 saveNote()，配一块 textarea（d-note）+「记下」按钮。
+// 它跟底部常驻栏的「让助手做什么」是同一件事的两个入口：
+//   意见 = 存到这一版上，给下一版当输入
 //   派活 = 真的送进会话，让助手当场开始干
-// 两者共用 /runs/feedback 落盘，但记意见**不发给任何人**，只存。
-async function saveNote() {
-  const ta = $('d-note'), hint = $('d-hint'), btn = $('d-fb-send');
-  if (!ta) return;
-  const v = String(ta.value || '').trim();
-  if (!v) { ta.focus(); return; }
-  if (!state.cur) { if (hint) hint.textContent = '先选一个产出'; return; }
-  if (btn) { btn.disabled = true; btn.textContent = '存入中…'; }
-  try {
-    const r = await api('/blender-bridge/runs/feedback', { id: state.cur.id, text: v });
-    if (btn) { btn.disabled = false; btn.textContent = '记下'; }
-    if (!r || !r.ok) { if (hint) hint.textContent = '没存上：' + ((r && r.error) || '未知'); return; }
-    // 回读服务端写下的全文，不自己拼——自己拼的迟早跟盘上不一样
-    const fb = r.feedback || '';
-    state.cur.feedback = fb;
-    const box = $('d-fb');
-    if (box) { box.textContent = plainFeedback(fb); box.hidden = !fb; }
-    const e = $('d-fb-empty'); if (e) e.hidden = !!fb;
-    const c = $('d-fbcount'); if (c) c.textContent = String(fb.split('\n').filter((x) => x.trim()).length || '');
-    ta.value = '';
-    if (hint) hint.textContent = '已记下（会跟着这一版进下一版的上下文）';
-    flashMsg('已记下意见');
-    logLine('意见：' + v.slice(0, 60));
-  } catch (e) {
-    if (btn) { btn.disabled = false; btn.textContent = '记下'; }
-    if (hint) hint.textContent = '没存上：' + String((e && e.message) || e).slice(0, 70);
-  }
+// 而 dispatch() 干的第一件事，就是把底部那段话写进 /runs/feedback。
+// 两句话来自两个框，存的却是同一个文件 —— 人只要用错一次，就会以为意见没生效。
+//
+// 所以：输入框只留底部那一个（它同时存意见 + 真发出去）；
+// 这块降级成**只读展示**，告诉人「上一版留下了什么」。
+function renderFeedback(fb) {
+  const box = $('d-fb');
+  if (box) { box.textContent = plainFeedback(fb); box.hidden = !fb; }
+  const e = $('d-fb-empty'); if (e) e.hidden = !!fb;
+  const c = $('d-fbcount');
+  if (c) c.textContent = String(String(fb || '').split('\n').filter((x) => x.trim()).length || '');
 }
-if ($('d-fb-send')) $('d-fb-send').onclick = saveNote;
-if ($('d-note')) $('d-note').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveNote(); }
-});
 
 // ── 派活 ──
-// 与“记意见”不是同一件事，虽然写的是同一句话：
-//   意见 = 存到这一版上，给下一版当输入（比浏览器活得久）
+// 一句话干两件事：存进这一版的意见，同时真的发进助手会话。
+
+// ── 派活 ──
+// 一句话干两件事：存进这一版的意见，同时真的发进助手会话。
 //   派活 = 真的送进会话，让助手当场开始干
 // 所以一次提交把两件都做了，而且是先落盘再发送：
 // 落盘失败还发出去，等于说了话却没留底。
@@ -520,8 +503,9 @@ async function dispatch() {
   const btnGuard = setTimeout(() => {
     restoreBtn();
     hint.classList.remove('ok');
-    hint.textContent = '没发出去：请求超时未应答（后端或宿主桥没回）';
-  }, 60000);
+    hint.textContent = '等了 120 秒还没回执：话可能已经送到，去助手会话看一眼再决定要不要重发';
+    flashMsg('超时，可能已送达');
+  }, 120000);
 
   api('/blender-bridge/runs/feedback', { id: runId, text: v })
     .catch(() => null)
@@ -539,6 +523,11 @@ async function dispatch() {
     .then((r) => {
       clearTimeout(btnGuard);
       restoreBtn();
+
+      // 三种结果，处理动作不同——不能挤成一句「没发出去」：
+      //   ① 当场完成  → 已派给助手
+      //   ② 提交了但还在跑 → **先去查，不要重发**（重发会让助手收到两遍）
+      //   ③ 真失败 → 说清原因
       if (r && r.ok) {
         // 把“去了哪”说清楚。模型换失败要带原因——
         // 只说“没换成”等于没说，人不知道该去改什么。
@@ -551,16 +540,39 @@ async function dispatch() {
         ta.value = '';
         flashMsg('已派给助手');
         logLine('派活：' + v.slice(0, 60));
-      } else {
-        hint.classList.remove('ok');
-        hint.textContent = '没发出去：' + ((r && r.error) || '未知');
+        return;
       }
+
+      // ② 提交了，但还没跑完（后端 30s 硬上限，长活走「提交即返回」）。
+      //   这时**话很可能已经送到了**，只是回执还没回来。
+      //   界面必须说这个，否则人以为失败会去再点一次，助手就收到两遍。
+      const running = r && (r.running === true || (r.details && r.details.running));
+      if (running) {
+        const tid = (r.details && r.details.taskId) || r.taskId || '';
+        hint.classList.remove('ok');
+        hint.textContent = `已提交，还在跑${tid ? '（' + tid + '）' : ''}：话很可能已经送到了——先别重点，去助手会话看一眼；要查结果就用工具调 dispatch op=status`;
+        ta.value = '';
+        flashMsg('已提交，正在后台跑');
+        logLine('派活提交：' + v.slice(0, 50) + (tid ? '（' + tid + '）' : ''));
+        return;
+      }
+
+      hint.classList.remove('ok');
+      hint.textContent = '没发出去：' + ((r && r.error) || '未知');
     })
     .catch((e) => {
       clearTimeout(btnGuard);
       restoreBtn();
       hint.classList.remove('ok');
-      hint.textContent = '没发出去：' + String((e && e.message) || e).slice(0, 80);
+      // 超时并不等于没送到——前面那个「意见已存」已经落盘了，
+      // 而 send-custom 很可能也进了会话。所以不能用「没发出去」这种断言。
+      const msg = String((e && e.message) || e).slice(0, 90);
+      if (/超时|timeout/i.test(msg)) {
+        hint.textContent = '请求超时未应答：话可能已经送到，去助手会话看一眼再决定要不要重发（' + msg + '）';
+        flashMsg('超时，可能已送达');
+      } else {
+        hint.textContent = '没发出去：' + msg;
+      }
     });
 }
 if ($('d-dispatch')) $('d-dispatch').onclick = dispatch;

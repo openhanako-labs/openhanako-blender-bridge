@@ -1102,9 +1102,36 @@ export default defineApp(async (sdk) => {
     } catch { return ""; }
   }
 
+  // ！dispatch 为何要改成「提交即返回 + 轮询」：
+  //
+  //   宿主 sdk.runtime.fetch / 工具面 RPC 的上限是 **30s，而且不是我们定的**
+  //   （HanaPluginRuntimeFetchInitV2：“1 through 30000”）。传更大的值会被默默砍回 30s。
+  //
+  //   而 dispatch 最坏要：session:list(8s) + session:create(15s) + send-custom(8s) ≈ **55s**。
+  //   实测结果就是这个错位：工具面报 `callback.tools.execute timed out after 30000ms`，
+  //   而后台其实把话送到了——洛琪希确实收到了、也回了。
+  //   人在卡片上看到的是「派发中…」永远不回来，因为前端等的那条响应永远不会有了。
+  //
+  //   **做了却报失败，比真失败更坏**：它会让人重试，于是话发两遍。
+  //
+  //   所以照 render 的做法：同步只做「登记 + 起后台」，立刻返回 taskId；
+  //   状态走 action=dispatch op=status。
+  const dispatchTasks = new Map(); // taskId -> { state, startedAt, result, error, phase }
+
+  function newDispatchTask() {
+    const id = "dsp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    dispatchTasks.set(id, { state: "running", startedAt: Date.now(), result: null, error: null, phase: "准备" });
+    // 只留最近 20 个，避免长跑会话里无限堆积
+    if (dispatchTasks.size > 20) {
+      const oldest = [...dispatchTasks.entries()].sort((a, b) => a[1].startedAt - b[1].startedAt)[0];
+      if (oldest) dispatchTasks.delete(oldest[0]);
+    }
+    return id;
+  }
+
   // 入参：{ brief, agentId?, modelId?, provider?, runId?, sessionId? }
   // 返回：{ ok, ... } 或抛错
-  async function dispatchWork({ brief, agentId, modelId, provider, runId, sessionId } = {}) {
+  async function dispatchWork({ brief, agentId, modelId, provider, runId, sessionId, onPhase } = {}) {
     const write = String(brief || "").trim();
     if (!write) throw new Error("先说一句要做什么");
 
@@ -1152,6 +1179,7 @@ export default defineApp(async (sdk) => {
     let sid = sessionId ? String(sessionId) : null;
     let created = null;
     let listError = null;
+    if (onPhase) onPhase("找会话");
     if (!sid) {
       try {
         const sl = await sdk.bus.request("session:list", { scope: "all", agentId: wantAgent }, { timeoutMs: 8000 });
@@ -1173,6 +1201,7 @@ export default defineApp(async (sdk) => {
       // create 时不带 model：带了就多依赖一个权限，
       // 那边一拒，会话就建不出来（连带整个派活挂掉）。
       // 先建会话，要换模型再用 switch-model 单独换——两步各自失败互不牵连。
+      if (onPhase) onPhase("建会话");
       const cr = await sdk.bus.request("session:create", { agentId: wantAgent }, { timeoutMs: 15000 });
       if (cr && (cr.sessionId || (cr.sessionRef && cr.sessionRef.sessionId))) {
         sid = String(cr.sessionId || cr.sessionRef.sessionId);
@@ -1204,6 +1233,7 @@ export default defineApp(async (sdk) => {
         modelError = "没拿到这个模型的 provider——列表里可能没给出，换不了";
       } else {
         try {
+          if (onPhase) onPhase("换模型");
           const mr = await sdk.bus.request("session:switch-model",
             { sessionId: sid, modelId: wantModel, provider: wantProvider },
             { timeoutMs: 8000 });
@@ -1215,6 +1245,7 @@ export default defineApp(async (sdk) => {
       }
     }
 
+    if (onPhase) onPhase("发送要求");
     const sr = await sdk.bus.request("session:send-custom", {
       scope: "all",
       sessionId: sid,
@@ -2326,22 +2357,82 @@ export default defineApp(async (sdk) => {
       // 和卡片上那个「派给助手」按钮共用 dispatchWork 一个实现。
       // 为什么在工具面也要有：从对话里派活时，人不需要先去开一张卡。
       case "dispatch": {
-        const r = await dispatchWork({
+        const op = String(args.op || "start");
+
+        // 查派活结果。
+        // 为何不是同步等：见 dispatchTasks 上方那段（工具面 30s 硬上限 vs 内部最坏 55s）。
+        if (op === "status") {
+          if (!args.taskId) throw new Error("action=dispatch op=status 需要 taskId（start 时返回的那个）");
+          const t = dispatchTasks.get(String(args.taskId));
+          if (!t) return textResult(`找不到这个派活任务：${args.taskId}（可能已超出保留的最近 20 个）`);
+          const sec = Math.round((Date.now() - t.startedAt) / 1000);
+          if (t.state === "running") {
+            return textResult(`派活进行中（${sec}s，当前阶段：${t.phase || "?"}）。稍后再查。`);
+          }
+          if (t.state === "failed") {
+            return textResult(`派活失败（${sec}s）：${t.error || "原因未知"}`);
+          }
+          const r = t.result || {};
+          const lines = [
+            `已派给 ${r.agentId}`,
+            `- 会话：${r.sessionId}${r.createdSession ? "（新建）" : "（复用已有的）"}`,
+            r.modelId
+              ? `- 模型：${r.modelId}（${r.provider}）— ${r.modelSwitched === true ? "已换" : "**没换成**：" + (r.modelError || "原因未知")}`
+              : "- 模型：没指定，用那个助手本来的",
+            `- 耗时：${sec}s`,
+          ];
+          if (r.listError) lines.push(`- 注：没能读到已有会话（${r.listError}），所以新建了一个`);
+          return textResult(lines.join("\n"), { details: r });
+        }
+
+        // op=start：登记 + 起后台，立刻返回。
+        const taskId = newDispatchTask();
+        const task = dispatchTasks.get(taskId);
+        dispatchWork({
           brief: args.brief,
           agentId: args.agent,
           modelId: args.model,
           provider: args.provider,
           runId: args.runId,
+          sessionId: args.sessionId,
+          onPhase: (p) => { task.phase = p; },
+        }).then((r) => {
+          task.state = "done";
+          task.result = r;
+        }).catch((e) => {
+          task.state = "failed";
+          task.error = msgOf(e);
         });
-        const lines = [
-          `已派给 ${r.agentId}`,
-          `- 会话：${r.sessionId}${r.createdSession ? "（新建）" : "（复用已有的）"}`,
-          r.modelId
-            ? `- 模型：${r.modelId}（${r.provider}）— ${r.modelSwitched === true ? "已换" : "**没换成**：" + (r.modelError || "原因未知")}`
-            : "- 模型：没指定，用那个助手本来的",
-        ];
-        if (r.listError) lines.push(`- 注：没能读到已有会话（${r.listError}），所以新建了一个`);
-        return textResult(lines.join("\n"), { details: r });
+
+        // 常快的情况（复用已有会话、不换模型）一秒内就完成，
+        // 先给它 3s 等一下——瞬时就返回结果比让人多问一轮舒服。
+        // 但**绝不等到超 30s**：那正是把 dispatch 送进 30s 墙的原因。
+        const deadline = Date.now() + 3000;
+        while (task.state === "running" && Date.now() < deadline) {
+          await sleep(150);
+        }
+
+        if (task.state === "done") {
+          const r = task.result || {};
+          const lines = [
+            `已派给 ${r.agentId}`,
+            `- 会话：${r.sessionId}${r.createdSession ? "（新建）" : "（复用已有的）"}`,
+            r.modelId
+              ? `- 模型：${r.modelId}（${r.provider}）— ${r.modelSwitched === true ? "已换" : "**没换成**：" + (r.modelError || "原因未知")}`
+              : "- 模型：没指定，用那个助手本来的",
+          ];
+          if (r.listError) lines.push(`- 注：没能读到已有会话（${r.listError}），所以新建了一个`);
+          return textResult(lines.join("\n"), { details: r });
+        }
+        if (task.state === "failed") {
+          return textResult(`派活失败：${task.error || "原因未知"}`);
+        }
+        return textResult(
+          `派活已提交（taskId=${taskId}，当前阶段：${task.phase || "?"}）\n` +
+          `- 它还在后台跑，用 action=dispatch op=status taskId=${taskId} 查结果\n` +
+          `- 话很可能已经送到了——**先查状态，不要重发**，重发会让助手收到两遍`,
+          { details: { taskId, running: true } },
+        );
       }
 
       // 派活的选项面：能发给谁、能选哪些模型。
