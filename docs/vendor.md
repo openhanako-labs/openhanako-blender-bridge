@@ -1,12 +1,21 @@
 # 第三方组件与许可
 
-本 App 内嵌了两份第三方代码，均为 **BSD-3-Clause**，版权归原作者。
+本 App 内嵌了两份第三方代码，**许可不同**，不能笼统归为一种：
 
-## 1. `vendor/blender-mcp-addon.py`
+| 位置 | 许可 | 版权 |
+|---|---|---|
+| `vendor/dsh-rt/` | **BSD 3-Clause** | sixtyseven67 |
+| `vendor/blender-mcp-addon.py` | **MIT** | Siddharth Ahuja |
 
-Blender 侧的 MCP 桥接 addon。来源 `ahujasid/mcp-for-blender`。
+## 1. `vendor/blender-mcp-addon.py`（MIT）
 
-## 2. `vendor/dsh-rt/` — 迁移自 `dsh-blender-plugin`
+Blender 侧的 MCP 桥接 addon。来源 `ahujasid/mcp-for-blender`
+（https://github.com/ahujasid/blender-mcp，MIT，3 万+ 星）。
+它负责 TCP 通道的另一端，以及把命令排队回主线程执行 `bpy`。
+
+许可全文见 `vendor/LICENSE-blender-mcp.txt`。
+
+## 2. `vendor/dsh-rt/`（BSD-3-Clause）—— 迁移自 `dsh-blender-plugin`
 
 一个成熟的 DSH × Blender 直连插件。
 

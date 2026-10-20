@@ -40,9 +40,30 @@ Hana 模型 → blender 工具
 
 ---
 
-## 参考仓库
+## 站在谁的肩膀上
 
-本项目照着族内这几个 App 做的，通道范式、发布规程、视觉规范都源自它们：
+**这个 App 的大部分能力不是我们写的。** 三十五、六个 action 里，契约层、规划器、内环搜索、
+事务回滚、QC 比对、生成器、机构解算那一整套，来自下面这个上游项目；
+Blender 侧的通信底座来自另一个；建模方法论来自第三个。
+
+本项目的改动集中在两件很具体的事上：**把直连通道改造成受管 runtime 的形态**，
+以及**接进 Hana 的工具面与卡片**。其余是上游的功劳，见 [`docs/vendor.md`](docs/vendor.md)。
+
+### 代码上游
+
+| 项目 | 许可 | 在本项目里的位置 |
+|---|---|---|
+| [**sixtysevenlf/dsh-blender-plugin**](https://github.com/sixtysevenlf/dsh-blender-plugin)<br>DSH × Blender 直连实时插件 | BSD-3-Clause | `vendor/dsh-rt/` —— **能力族的主体**：契约层、规划器（`plan`）、内环搜索（`loop`）、事务（`txn`）、QC、生成器、机构（`motion`）、无头进程等 |
+| [**ahujasid/mcp-for-blender**](https://github.com/ahujasid/blender-mcp)<br>Blender 侧 MCP 桥接 addon | MIT | `vendor/blender-mcp-addon.py` —— TCP 通道与 `bpy` 主线程执行的那一端 |
+| [**RobLe3/cc-blender-skill**](https://github.com/RobLe3/cc-blender-skill) | MIT | `skills/blender-modeling/` 的决策树、配方、坑表 |
+| [**arjun988/blender-skills**](https://github.com/arjun988/blender-skills) | MIT | 同上：六步总纲、修改器栈哲学、清理清单 |
+
+后两个的上游是 sixtysevenlf 那份随包技能的再上游；本项目的建模技能是它们三者的融合派生，
+改写说明见 `skills/blender-modeling/NOTICE.md`。
+
+### 族内参考
+
+发布形态、通道骨架、视觉规范向这几个 App 看齐：
 
 | 仓库 | 借了什么 |
 |---|---|
@@ -50,8 +71,6 @@ Hana 模型 → blender 工具
 | [hanako-mail](https://github.com/openhanako-labs/openhanako-mail) | 带 backend 依赖的打包口径、`CHANGELOG` 写法 |
 | [bilibili-intake-v2](https://github.com/openhanako-labs/openhanako-bilibili-intake) | App 沙箱内跑外部程序的五道坎 |
 | [eleckoi-tavern](https://github.com/openhanako-labs/openhanako-tavern) | 卡片分「验收」与「操作」两张的设计取向 |
-
-发布规程与视觉规范见内部文档《HanaApp 发布与视觉手册》（五道闸口径、图标封面七条、发版流水线）。
 
 ---
 
@@ -62,12 +81,14 @@ Hana 模型 → blender 工具
 ## 依赖
 
 - Blender 4.x / 5.x（GUI 模式运行）
-- Blender 侧 addon：`ahujasid/mcp-for-blender`（BSD-3，已随包带在 `vendor/`）
+- Blender 侧 addon：`ahujasid/mcp-for-blender`（**MIT**，已随包带在 `vendor/`）
 - 无需额外装 Node（中继跑在 Hana 的受管 runtime 里）
 
 ## 许可
 
-自有代码 AGPL-3.0-or-later；`vendor/` 为上游 BSD-3-Clause，`skills/blender-modeling/` 为 MIT 派生作品。详见 [`LICENSE`](LICENSE)。
+自有代码 AGPL-3.0-or-later。`vendor/dsh-rt/` 为 upstream **BSD-3-Clause**，
+`vendor/blender-mcp-addon.py` 为 **MIT**，`skills/blender-modeling/` 为 MIT 派生作品。
+分项与全文见 [`LICENSE`](LICENSE)，上游明细见 [`docs/vendor.md`](docs/vendor.md)。
 
 ## 变更
 

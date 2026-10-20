@@ -1,0 +1,54 @@
+Blender 助手（Blender Bridge）
+Copyright (C) 2026 Yuexiye (月曦夜)
+
+本程序为自由软件：你可以依据自由软件基金会发布的 GNU Affero 通用公共许可证
+（第 3 版或你选择的任何更新版本）的条款重新发布和/或修改它。
+
+本程序的发布是希望它有用，但不提供任何担保；甚至不包含适销性或特定用途
+适用性的默示担保。详见 GNU Affero 通用公共许可证。
+
+你应当已收到本程序附带的 GNU Affero 通用公共许可证副本。
+如未收到，见 <https://www.gnu.org/licenses/agpl-3.0.html>。
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+────────────────────────────────────────────────────────────────
+
+第三方组件与例外
+
+本项目的 AGPL-3.0 仅覆盖本项目自有代码。下列组件为第三方作品，
+遵循各自的许可证，不受本项目许可证变更：
+
+  1. vendor/dsh-rt/                              BSD 3-Clause
+     Copyright (c) 2026, sixtyseven67
+     上游：sixtysevenlf/dsh-blender-plugin
+     https://github.com/sixtysevenlf/dsh-blender-plugin
+     全文见 vendor/LICENSE-dsh-blender.txt
+
+  2. vendor/blender-mcp-addon.py                 MIT
+     Copyright (c) 2025 Siddharth Ahuja
+     上游：ahujasid/mcp-for-blender
+     https://github.com/ahujasid/mcp-for-blender
+     全文见 vendor/LICENSE-blender-mcp.txt
+
+  3. skills/blender-modeling/                    MIT
+     派生自以下两个 MIT 项目：
+       RobLe3/cc-blender-skill    https://github.com/RobLe3/cc-blender-skill
+       arjun988/blender-skills    https://github.com/arjun988/blender-skills
+     全文见 skills/blender-modeling/LICENSE
+     来源与改写说明见 skills/blender-modeling/NOTICE.md
+
+  4. ui/assets/THIRD_PARTY_NOTICES.txt
+     前端 SDK 及其依赖的许可声明
+
+分发本程序时，请一并保留上述许可文件。
+
+────────────────────────────────────────────────────────────────
+
+致谢
+
+这个 App 能存在，主要是站在上面这三个上游项目上：
+dsh-blender-plugin 提供了整套能力族（契约层、规划器、内环搜索、事务、
+QC、生成器、机构），mcp-for-blender 提供了 Blender 侧的通信底座，
+cc-blender-skill 与 blender-skills 提供了建模方法论。
+本项目的改动集中在「通道形态」与「与 Hana 的接线」上，见 CONTRIBUTING.md。
