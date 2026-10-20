@@ -36,8 +36,8 @@ description: Blender 建模流程与装配作业指导书。触发场景：做�
 
 ## 二、工具译名表（★ 动手前必读）
 
-> ⚠ **先读下面那条「能力缺口」——本 App 的 runtime 比这份指导书旧很多，
-> 书里大批 op 我们根本没有。** 不看那一条就照书调，会一直失败。
+> ⚠ **先读下面那条「能力核对」——本 App 的 runtime 已补齐，书里的 op 基本都能接。**
+> （这条提醒以前是反向的：那版 runtime 缺一整层，不看会一直失败。）
 
 **本 App 的工具面是一个 `blender` 工具 + `action=`。**
 下面这套命名来自上游文档 —— **同一个内核（`dsh-rt`），只是叫法不同**。
@@ -51,7 +51,7 @@ description: Blender 建模流程与装配作业指导书。触发场景：做�
 | `blender_rt_loop` | `loop` |
 | `blender_rt_cmd` / `blender_rt_commands` | `raw` / `commands` |
 | `blender_rt_perf` | `perf` |
-| `blender_rt_opt` | **未接** |
+| `blender_rt_opt` | **未接**（`plan op=opt` 也没有；用 `nodes` 里的 decimate 替代，或直接 `do` 写 bmesh） |
 | `blender_rt_headless` | `headless` |
 | `blender_rt_worker` | `worker` |
 | `blender_rt_txn` | `txn` |
@@ -75,26 +75,40 @@ description: Blender 建模流程与装配作业指导书。触发场景：做�
 `drive`、`wheel`、`rig`、`runs`（归档）、`dispatch`（派活）、`models`（列助手与模型）、`assets`（PolyHaven）、`channel`（渲染通道）。
 不确定有什么，先 `commands` 列一遍，别猜。
 
-## 二之二、能力缺口（★ 实测，2026-10-20）
+## 二之二、能力核对（★ 实测，2026-10-20）
 
-**本 App 的 runtime 是上游 v0.9.0（2026-09-17）的快照，而本指导书写于 v1.x / v2.x。**
-把书里出现的 59 个 `op` 逐个对过：**17 个有，42 个没有**。
+**本 App 的 runtime 已升到上游 `main`（v2.5 线）。下面这张表是实测核对的结果，不是承诺。**
 
-**整族缺失**（每一个都调不通，别去试）：
+把书里出现的 59 个 `op` 逐个对过本机 runtime：**55 个直接有，4 个走 action 层映射**。
 
-| 族 | 缺什么 | 书里用它干什么 |
-|---|---|---|
-| `shape_*` | draft / plan / revolve / loft / sections / fit / regions / panels | §0.7 类型表的主力（旋转体、放样、参考图还原） |
-| `human_*` | base / head / measure / spec | Recipe 15 / 16 |
-| `vehicle_*` | package / base / sections / loft / panels / fit / regions | Recipe 17–21 |
-| `sculpt_*` | scan / setup / apply / mask / filter | Recipe 11 |
-| `gate_*` | plan / run | 装配总验收（三态） |
-| 其它 | `print_report` / `sweep_analyze` / `sweep_build` / `crease_lines` / `inset_lines` / `img_rectify` / `img_diff` / `pipe_run` / `fix_repair` / `fix_decimate` / `uv_smart_project` / `uv_unwrap` / `uv_pack` / `uv_stats` / `clear_check` / `face_ratios` / `catalog` | §6 门清单、Recipe 11–24 的一大半 |
+> 这份核对是有历史的，而且值得知道：
+> **升级之前只有 17 个能接** —— 而书里「动手前先查」的那张 §0.7 类型表，
+> 12 行里有 **9 行指向不存在的 op**。当时逐族缺失的是：
+> `shape_*` / `human_*` / `vehicle_*` / `sculpt_*` / `gate_*` / `print_report` /
+> `sweep_*` / `uv_*` / `fix_*` / `material_*` / `img_*` / `pipe_run` / `catalog` …
+> 当时的症状很直白：`plan op=catalog` 回 `unknown contract op`。
+>
+> 造成的后果值得记：**壶是回转体，书里明写该走 `shape_revolve`，
+> 而那个 op 在我们这版里不存在** —— 于是只能拿 `do` 手写一个等价物。
+> **不是不知道路，是路没修。**
+>
+> 现在修了。（经过见 `blender-bridge/README.md` 的第三方组件一节与仓库提交。）
 
-**实测确认**：`plan op=catalog` → `unknown contract op`；
-整个 `vendor/dsh-rt/runtime` 里搜不到这些名字（不是找错文件）。
+**四个「名字对不上」的**（不是没有，是入口不同）：
 
-**那我们有什么**（这些是通的）：
+| 书里写的 | 本 App 怎么调 |
+|---|---|
+| `generator_diff` | `generator op=diff` |
+| `launch` | `service op=start` |
+| `lease` / `who` | `lease op=who` |
+
+**升级后当场实测通过的两条**：
+
+- `plan op=catalog` → 返回 **12 类建模类型表**（就是「动手前先查」的那张）
+- `plan op=shape_plan(object_class="rotational")` → 返回回转体的完整通路：
+  `img_scan → shape_revolve → print_report`，并点名陷阱「**别用放样**：旋转体要沿轴旋转单条轮廓」
+
+**工具面全貌**（这些都通）：
 
 - 通道与执行：`doctor` / `service` / `see` / `view` / `do` / `raw` / `commands` / `headless` / `worker` / `job` / `status`
 - **契约层本身是活的**：`plan op=status` 正常（组件 / 连接 / 包络 / 证据 / 未判别连接）——
