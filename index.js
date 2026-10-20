@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { createRunStore, TAG_BASELINE, TAG_DELIVERED, DEFAULT_KEEP } from "./lib/archive.mjs";
 import { pruneStaleRuntimeConfigs } from "./lib/runtime-config.mjs";
 import { loadTemplates, proportionReport, styleNames } from "./lib/proportion.mjs";
+import { buildCollideScript, parseCollide, classifyHits, hitLine, collideVerdict } from "./lib/collide-probe.mjs";
 // 接口契约的唯一事实来源。见 schema.js 头部：为什么它必须在这个闭包之外。
 import * as SCHEMA from "./schema.js";
 
@@ -1657,59 +1658,17 @@ export default defineApp(async (sdk) => {
           const allow = Array.isArray(args.allow) ? args.allow.map(String) : [];
           const eps = Number(args.eps ?? 0.0005);
           const maxPairs = Number(args.maxPairs ?? 60);
-          const code = [
-            "import bpy, itertools, json",
-            "from mathutils import Vector",
-            "def _bb(o):",
-            "    lo = Vector((1e18,)*3); hi = Vector((-1e18,)*3)",
-            "    for c in o.bound_box:",
-            "        w = o.matrix_world @ Vector(c)",
-            "        for i in range(3):",
-            "            lo[i]=min(lo[i],w[i]); hi[i]=max(hi[i],w[i])",
-            "    return lo,hi",
-            "objs = [o for o in bpy.context.scene.objects if o.type=='MESH' and not o.hide_viewport]",
-            "bb = {o.name: _bb(o) for o in objs}",
-            "EPS = " + JSON.stringify(eps),
-            "ALLOW = set(" + JSON.stringify(allow) + ")",
-            "def allowed(a, b):",
-            "    return (a in ALLOW) or (b in ALLOW) or ((a + '|' + b) in ALLOW) or ((b + '|' + a) in ALLOW)",
-            "hits = []",
-            "for a, b in itertools.combinations(sorted(bb), 2):",
-            "    la, ha = bb[a]; lb, hb = bb[b]",
-            "    d = [min(ha[i], hb[i]) - max(la[i], lb[i]) for i in range(3)]",
-            "    if not all(v > EPS for v in d):",
-            "        continue",
-            "    da = [ha[i]-la[i] for i in range(3)]",
-            "    db = [hb[i]-lb[i] for i in range(3)]",
-            "    contains = all((da[i] >= db[i] - EPS) for i in range(3)) or all((db[i] >= da[i] - EPS) for i in range(3))",
-            "    # ！拼缝与真干涉的区别不在体积，在**形状**：",
-            "    #     两块板贴在一起 → 重叠区又薄又长（最小边很小）",
-            "    #     真正的穿模     → 重叠区在三个方向上都有厚度",
-            "    #   实测：机箱六面拼缝的重叠体积高达 12800 mm³，",
-            "    #   而它能被看穿的全部特征就是“有一条边只有 8mm”。",
-            "    #   所以判据取“最小重叠边”，不取体积。",
-            "    thin_mm = round(min(d)*1000, 2)",
-            "    hits.append({'a': a, 'b': b, 'overlap_mm': [round(v*1000, 2) for v in d],",
-            "                 'vol_mm3': round(d[0]*d[1]*d[2]*1e9, 1), 'thinnest_mm': thin_mm,",
-            "                 'flat_a': round(min(da)*1000, 2), 'flat_b': round(min(db)*1000, 2),",
-            "                 'contains': contains, 'allowed': allowed(a, b)})",
-            "hits.sort(key=lambda h: -h['vol_mm3'])",
-            "print('DSH_COLLIDE ' + json.dumps({",
-            "    'ok': True, 'objects': len(objs), 'pairs': len(hits),",
-            "    'blocking': [h for h in hits if not h['allowed']][:" + JSON.stringify(maxPairs) + "],",
-            "}, ensure_ascii=False))",
-          ].join("\n");
+          // 探针脚本与判定都在 lib/collide-probe.mjs —— 一份代码给两处用。
+          // （原先 audit 与 do check=collide 各存一份副本，已经开始漂移。）
+          const code = buildCollideScript({ eps, allow, maxPairs });
 
           const rr = await relayFetch("/do", { code, timeoutMs: 120_000 }, 130_000);
           const out = String((rr && rr.result && rr.result.result) || "");
-          const m = /DSH_COLLIDE (\{[\s\S]*\})\s*$/.exec(out.trim());
-          if (!m) {
+          const cres = parseCollide(out);
+          if (!cres) {
             const tail = (rr && rr.result && (rr.result.error || rr.result.stderr)) || out.slice(-300) || "无回执";
             return textResult(`干涉检查没有回执：${String(tail).replace(/\s+/g, " ").slice(0, 300)}`);
           }
-          let cres = null;
-          try { cres = JSON.parse(m[1]); } catch { cres = null; }
-          if (!cres) return textResult(`回执不是合法 JSON：${m[1].slice(0, 250)}`);
 
           const blocking = cres.blocking || [];
           const clines = [`零件干涉 · ${cres.objects} 个网格 · ${cres.pairs} 处相交`];
@@ -1738,14 +1697,7 @@ export default defineApp(async (sdk) => {
           //
           // 这才是“看形状”而不是“看重叠多少”。
           const plateMm = Number(args.seamMm ?? 12);
-          const isSeam = (h) => {
-            if (h.contains) return false;             // 包含绝不归为拼缝
-            const aFlat = h.flat_a <= plateMm;        // a 是薄壳
-            const bFlat = h.flat_b <= plateMm;        // b 是薄壳
-            return aFlat && bFlat;                    // 两个都是薄壳才算拼缝
-          };
-          const shown = blocking.filter((h) => !skipGrazing || !isSeam(h));
-          const grazing = blocking.length - shown.length;
+          const { shown, grazing } = classifyHits(blocking, { seamMm: plateMm, skipGrazing });
 
           if (!shown.length) {
             clines.push(`- 无需要处理的干涉`);
@@ -1753,8 +1705,7 @@ export default defineApp(async (sdk) => {
           } else {
             clines.push(`- 需要处理 ${shown.length} 处：`);
             for (const h of shown.slice(0, 20)) {
-              const tag = h.contains ? "｜一个包住了另一个，多半尺寸弄反" : "";
-              clines.push(`  · ${h.a} × ${h.b}：重叠 ${h.overlap_mm.join("×")} mm（最薄 ${h.thinnest_mm}mm），${h.vol_mm3} mm³${tag}`);
+              clines.push(`  · ${hitLine(h)}`);
             }
             if (shown.length > 20) clines.push(`  …另有 ${shown.length - 20} 处`);
             if (grazing > 0) clines.push(`  （已过滤 ${grazing} 处拼缝/模触，两个零件都是薄壳）`);
@@ -2770,55 +2721,16 @@ export default defineApp(async (sdk) => {
         //   建完一批零件传 check=collide，看一眼结果；
         //   只是跑个脚本查信息就别浪费这次碰撞。
         if (args.check === "collide") {
-          const cc = await relayFetch("/do", {
-            code: [
-              "import bpy, itertools, json",
-              "from mathutils import Vector",
-              "def _bb(o):",
-              "    lo = Vector((1e18,)*3); hi = Vector((-1e18,)*3)",
-              "    for c in o.bound_box:",
-              "        w = o.matrix_world @ Vector(c)",
-              "        for i in range(3):",
-              "            lo[i]=min(lo[i],w[i]); hi[i]=max(hi[i],w[i])",
-              "    return lo,hi",
-              "objs = [o for o in bpy.context.scene.objects if o.type=='MESH' and not o.hide_viewport]",
-              "if len(objs) < 2:",
-              "    print('VERDICT PASS - 只有 ' + str(len(objs)) + ' 个网格')",
-              "    raise SystemExit",
-              "bb = {o.name: _bb(o) for o in objs}",
-              "EPS = 0.0005",
-              "hits = []",
-              "for a, b in itertools.combinations(sorted(bb), 2):",
-              "    la, ha = bb[a]; lb, hb = bb[b]",
-              "    d = [min(ha[i], hb[i]) - max(la[i], lb[i]) for i in range(3)]",
-              "    if not all(v > EPS for v in d): continue",
-              "    da = [ha[i]-la[i] for i in range(3)]",
-              "    db = [hb[i]-lb[i] for i in range(3)]",
-              "    contains = all((da[i] >= db[i] - EPS) for i in range(3)) or all((db[i] >= da[i] - EPS) for i in range(3))",
-              "    thin = round(min(d)*1000, 2)",
-              "    flat_a = round(min(da)*1000, 2)",
-              "    flat_b = round(min(db)*1000, 2)",
-              "    thin_a = min(da)*1000 < 2",
-              "    thin_b = min(db)*1000 < 2",
-              "    if thin_a and thin_b: continue  # 两块薄壳搭一截 = 正常拼缝",
-              "    hits.append({'a': a, 'b': b, 'overlap_mm': [round(v*1000,2) for v in d],",
-              "                 'vol_mm3': round(d[0]*d[1]*d[2]*1e9, 1), 'thinnest_mm': thin,",
-              "                 'flat_a': flat_a, 'flat_b': flat_b, 'contains': contains})",
-              "if not hits:",
-              "    print('VERDICT PASS')",
-              "else:",
-              "    print('VERDICT FAIL - ' + str(len(hits)) + ' 处需要处理')",
-              "    for h in hits:",
-              "        tag = '包住' if h['contains'] else '穿模'",
-              "        print(f\"{h['a']} x {h['b']}: {tag} overlap={h['overlap_mm']} vol={h['vol_mm3']} thin={h['thinnest_mm']}mm\")",
-            ].join("\n"),
-          }, 30_000);
-          if (cc.ok !== false) {
-            const ctxt = String(cc.result || "");
-            const verdict = ctxt.includes("VERDICT PASS") ? "✅ PASS" : "❌ FAIL";
-            const tail = ctxt.split("\n").slice(0, 20).join("\n");
-            return textResult(`${body}\n\n--- 碰撞检查（自动）---\n${verdict}\n${tail}${ctxt.length > 800 ? "\n..." : ""}`);
-          }
+          // 与 audit op=collide 用同一套探针（lib/collide-probe.mjs）——
+          // 原先两处各存一份副本，已经开始漂移。
+          const cc = await relayFetch("/do", { code: buildCollideScript({}) }, 120_000);
+          // ！回执是两层：relayFetch 的结果里还套着一层 {executed, result}。
+          //   旧写法 String(cc.result) 把整个对象字符串化，得到 "[object Object]"，
+          //   于是判据永远找不到结论，一律判 FAIL —— 一个凭空造出来的失败。
+          //   实测：人形 8 件、audit 报 0 处相交，而这里报 FAIL。
+          const stdout = String((cc && cc.result && cc.result.result) || "");
+          const { verdict, lines } = collideVerdict(parseCollide(stdout));
+          return textResult(`${body}\n\n--- 碰撞检查（自动，与 audit op=collide 同一套探针）---\n${verdict}\n${lines.join("\n")}`);
         }
 
         return textResult(notice ? `${notice}\n\n${body}` : body);
