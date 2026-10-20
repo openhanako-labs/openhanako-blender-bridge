@@ -1,13 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="540" height="720" viewBox="0 0 540 720">
   <!-- Blender 助手 · 封面 1080×1440（3:4，栅格化前 540×720 viewBox，sharp density:144 放大 2×）
-       口径（手册 §四 七条）：
-         · 米白底 #F2EAD9 + 墨 #2B241E；身份色 钢青 #4A6E80（橘被音频占用，不撞）
+       口径（手册 §四 七条 + 族内实测）：
+         · 米白底 #F2EAD9 + 墨 #2B241E；身份色 钢青 #4A6E80
          · 插画占上 55%（y≤396）；标题总宽 ≤ 画布 92% = 497
          · 删眉行/标语/药丸；名字由 UI 名称栏承担
          · 字号 ≥110px（720 制）；字体 Source Han Serif SC + 同墨色 stroke 仿粗
-         · 身份色条 13–14px 通宽，放标题下
+         · 身份色条 13–14px —— 族内实测是「居中短横」，不是通宽：
+             图库 23.9% / 音频 40.6% / 摄取 48.0% / 邮件 49.8%，
+             均居中、贴标题下沿、距底 125–180px（1080 制）。
+             本条手册原写「通宽」，与实物不符，已改。
        标题「Blender 建模」：7 个拉丁字 + 2 字，单行会压到 ~85px 破字号下限，
-       故拆两行——Blender（y≈500）在上、建模（y≈608）在下，各 118px。 -->
+       故拆两行——Blender（y≈496）在上、建模（y≈606）在下，各 118px。 -->
   <rect width="540" height="720" fill="#F2EAD9"/>
 
   <!-- 插画：等距立方体 + 极淡投影（整体落在 top 55% 内） -->
@@ -19,19 +22,21 @@
   </g>
 
   <!-- 标题行 1：Blender -->
-  <text x="270" y="502" text-anchor="middle"
+  <text x="270" y="496" text-anchor="middle"
         font-family="'Source Han Serif SC','STZhongsong','SimSun',serif"
         font-size="118" font-weight="600" letter-spacing="-1"
         fill="#2B241E" stroke="#2B241E" stroke-width="4"
         paint-order="stroke fill">Blender</text>
 
   <!-- 标题行 2：建模 -->
-  <text x="270" y="612" text-anchor="middle"
+  <text x="270" y="606" text-anchor="middle"
         font-family="'Source Han Serif SC','STZhongsong','SimSun',serif"
         font-size="118" font-weight="600" letter-spacing="12"
         fill="#2B241E" stroke="#2B241E" stroke-width="4"
         paint-order="stroke fill">建模</text>
 
-  <!-- 身份色条：通宽 -->
-  <rect x="0" y="652" width="540" height="14" fill="#4A6E80"/>
+  <!-- 身份色条：居中短横（族内口径），贴「建模」下沿。
+       宽度 200/540 = 37%（族内 24–50%）；离画布底 63/720 → 126px（族内 125–180）
+       字底到色条顶 36/540 → 18px（族内 18–22） -->
+  <rect x="170" y="638" width="200" height="14" fill="#4A6E80"/>
 </svg>

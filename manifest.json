@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "blender-bridge",
   "name": "Blender 助手",
-  "version": "1.63.0",
+  "version": "1.63.1",
   "description": "本地建模：AI 看视口、跑代码、按参考图还原外形。",
   "entry": "index.js",
   "icon": "assets/icon-v2.png",
