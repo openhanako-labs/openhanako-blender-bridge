@@ -1,0 +1,34 @@
+Blender 助手（Blender Bridge）
+Copyright (C) 2026 Yuexiye (月曦夜)
+
+本程序为自由软件：你可以依据自由软件基金会发布的 GNU Affero 通用公共许可证
+（第 3 版或你选择的任何更新版本）的条款重新发布和/或修改它。
+
+本程序的发布是希望它有用，但不提供任何担保；甚至不包含适销性或特定用途
+适用性的默示担保。详见 GNU Affero 通用公共许可证。
+
+你应当已收到本程序附带的 GNU Affero 通用公共许可证副本。
+如未收到，见 <https://www.gnu.org/licenses/agpl-3.0.html>。
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+────────────────────────────────────────────────────────────────
+
+第三方组件与例外
+
+本项目的 AGPL-3.0 仅覆盖本项目自有代码。下列目录为第三方作品，
+遵循各自的许可证，不受本项目许可证变更：
+
+  vendor/                          BSD 3-Clause
+      Copyright (c) 2026, sixtyseven67
+      全文见 vendor/LICENSE-dsh-blender.txt
+
+  skills/blender-modeling/         MIT
+      Copyright (c) 2026 sixtyseven67
+      全文见 skills/blender-modeling/LICENSE
+      来源与改写说明见 skills/blender-modeling/NOTICE.md
+
+  ui/assets/THIRD_PARTY_NOTICES.txt
+      前端 SDK 及其依赖的许可声明
+
+分发本程序时，请一并保留上述许可文件。
