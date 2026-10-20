@@ -36,6 +36,9 @@ description: Blender 建模流程与装配作业指导书。触发场景：做�
 
 ## 二、工具译名表（★ 动手前必读）
 
+> ⚠ **先读下面那条「能力缺口」——本 App 的 runtime 比这份指导书旧很多，
+> 书里大批 op 我们根本没有。** 不看那一条就照书调，会一直失败。
+
 **本 App 的工具面是一个 `blender` 工具 + `action=`。**
 下面这套命名来自上游文档 —— **同一个内核（`dsh-rt`），只是叫法不同**。
 `references/upstream-playbook.md` 整本都写的是左列的名字，读的时候对着这张表换。
@@ -71,6 +74,49 @@ description: Blender 建模流程与装配作业指导书。触发场景：做�
 **本 App 还有几个上游那本没写的动作**：`nodes`（配方 / geo / mat / uv / attach）、
 `drive`、`wheel`、`rig`、`runs`（归档）、`dispatch`（派活）、`models`（列助手与模型）、`assets`（PolyHaven）、`channel`（渲染通道）。
 不确定有什么，先 `commands` 列一遍，别猜。
+
+## 二之二、能力缺口（★ 实测，2026-10-20）
+
+**本 App 的 runtime 是上游 v0.9.0（2026-09-17）的快照，而本指导书写于 v1.x / v2.x。**
+把书里出现的 59 个 `op` 逐个对过：**17 个有，42 个没有**。
+
+**整族缺失**（每一个都调不通，别去试）：
+
+| 族 | 缺什么 | 书里用它干什么 |
+|---|---|---|
+| `shape_*` | draft / plan / revolve / loft / sections / fit / regions / panels | §0.7 类型表的主力（旋转体、放样、参考图还原） |
+| `human_*` | base / head / measure / spec | Recipe 15 / 16 |
+| `vehicle_*` | package / base / sections / loft / panels / fit / regions | Recipe 17–21 |
+| `sculpt_*` | scan / setup / apply / mask / filter | Recipe 11 |
+| `gate_*` | plan / run | 装配总验收（三态） |
+| 其它 | `print_report` / `sweep_analyze` / `sweep_build` / `crease_lines` / `inset_lines` / `img_rectify` / `img_diff` / `pipe_run` / `fix_repair` / `fix_decimate` / `uv_smart_project` / `uv_unwrap` / `uv_pack` / `uv_stats` / `clear_check` / `face_ratios` / `catalog` | §6 门清单、Recipe 11–24 的一大半 |
+
+**实测确认**：`plan op=catalog` → `unknown contract op`；
+整个 `vendor/dsh-rt/runtime` 里搜不到这些名字（不是找错文件）。
+
+**那我们有什么**（这些是通的）：
+
+- 通道与执行：`doctor` / `service` / `see` / `view` / `do` / `raw` / `commands` / `headless` / `worker` / `job` / `status`
+- **契约层本身是活的**：`plan op=status` 正常（组件 / 连接 / 包络 / 证据 / 未判别连接）——
+  即 `register_connection` / `check_envelope` / `check_interference` / `check_interface` /
+  `destructive_guard` / `verify` / `flip` / `evidence` / `ledger` / `report`
+- 内环：`loop`（setup/step/measure/board/export）
+- 事务：`txn`（mark/revert/snapshot/restore）
+- 体检：`audit op=mesh / scene / duplicates / collide`
+- 判据：`qc op=compare / compare_auto / self_check / render_views`
+- 导出：`deliver op=export / verify`
+- 生成器：`generator op=save / run / list / get / diff` —— **参数化建模靠它**
+- 机构：`motion op=joint / joints / infer_axis / measure / export_urdf / export_usda`
+- 归档：`runs op=begin / put / finish / tag / views / prune / …`
+- 本 App 自己加的：`nodes`（配方/geo/mat/uv/attach）/ `drive` / `wheel` / `rig` / `dispatch` / `models` / `assets` / `channel`
+
+**怎么用这份书**：
+
+- **方法论部分照用**——§0.5 多 Agent 分工、§1 六步总纲、§2 决策树、§4 六条必踩的坑、§5 修改器栈序、
+  §6 门清单的**判据思想**，这些不依赖具体 op，而且正是这份书最值钱的地方。
+- **操作部分先对照本表**——书上写的 op 不在上面那条"我们有"的名单里，就自己用 `do` 写 bpy 实现，
+  或者先把缺的能力接回来（升级 runtime）。
+- **不要因为书里写了就以为它存在**——不确定先 `commands` 列一遍，或者 `plan op=<名字>` 试一下（会回 `unknown contract op`）。
 
 ## 三、有限硬件下的约束（本机实测）
 
