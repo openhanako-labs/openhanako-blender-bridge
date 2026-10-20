@@ -1404,6 +1404,39 @@ export default defineApp(async (sdk) => {
 
       case "plan": {
         const op = String(args.op || "status");
+
+        // ── 本地 op 必须在调上游之前分流 ──────────────────────────────────
+        //
+        // 曾经的真 bug（v1.52 →发现）：proportion 的分支写在「拿到上游 res 之后」，
+        //   而 /rt/plan 是无条件先调的。上游不认识 proportion，直接回
+        //   "unknown contract op" 并早退——于是那个分支**永远走不到**。
+        //   从 v1.52 上线到被发现，这条路径一次都没通过，而单元层面的
+        //   「schema 里有 style 参数」「JSON 文件存在」都是绿的。
+        //   教训：验证要打在**调用本身**上，不是打在旁边的零件上。
+        if (op === "proportion") {
+          const style = String(args.style || args.args?.style || "").toLowerCase();
+          const pt = JSON.parse(fs.readFileSync(path.join(__dirname, "runtime", "proportion_templates.json"), "utf8"));
+          const styles = pt.styles || {};
+          const lines = [`比例模板 · 单位：${pt.units || "ratio"}`];
+          if (!style || style === "list") {
+            lines.push(`- 共 ${Object.keys(styles).length} 种画风`);
+            for (const [k, v] of Object.entries(styles)) {
+              lines.push(`  · ${k}（${v.cn}）→ ${v.heads}头身｜身 ${v.torso_h}｜腿 ${v.legs_h}｜臂 ${v.arms_h}`);
+            }
+            lines.push(`- 用法：plan op=proportion style=<画风名>`);
+          } else {
+            const t = styles[style];
+            if (!t) {
+              lines.push(`- 未找到画风「${style}」。可选：${Object.keys(styles).join(" / ")}`);
+            } else {
+              lines.push(`- ${style}（${t.cn}）：${t.heads}头身`);
+              lines.push(`  头：1｜身：${t.torso_h}｜腿：${t.legs_h}｜臂：${t.arms_h}`);
+              if (t.note) lines.push(`  ${t.note}`);
+            }
+          }
+          return textResult(lines.join("\n"), { details: { ok: true, op: "proportion", style: style || "list" } });
+        }
+
         // fit_help / mate_check 的参数可以顶层传（feature, fit, nominal, tol_mm），
         // 也可以嵌套进 args。合并成一份传给 relay。
         const planArgs = { ...(args.args || {}), ...(args.feature ? { feature: args.feature } : {}), ...(args.fit ? { fit: args.fit } : {}), ...(args.nominal != null ? { nominal: args.nominal } : {}), ...(args.tol_mm != null ? { tol_mm: args.tol_mm } : {}), ...(args.d != null ? { d: args.d } : {}), ...(args.m != null ? { m: args.m } : {}), ...(args.conn_id ? { conn_id: args.conn_id } : {}) };
@@ -1480,34 +1513,6 @@ export default defineApp(async (sdk) => {
           if (res.why) {
             const why = Array.isArray(res.why) ? res.why : [res.why];
             for (const w of why.slice(0, 5)) lines.push(`  · ${String(w).slice(0, 120)}`);
-          }
-        } else if (op === "proportion") {
-          // 比例模板速查（本地 JSON，不走上游）。
-          //
-          // 为何做进 plan：它和 fit_help 同类——都是「查数据表」。
-          //   放在一起让模型一次调用就能拿到比例 + 公差，不用翻两个地方。
-          //
-          // 与 fit_help 的区别：fit_help 在上游（contract.py），
-          //   而比例模板是本 App 自己维护的数据文件（runtime/proportion_templates.json），
-          //   因为上游没有这个概念——它是从像素建模视频里提炼出来的。
-          let style = String(args.style || args.args?.style || "").toLowerCase();
-          const pt = JSON.parse(fs.readFileSync(path.join(__dirname, "runtime", "proportion_templates.json"), "utf8"));
-          const styles = pt.styles || {};
-          if (!style || style === "list") {
-            lines.push(`- 比例模板：${Object.keys(styles).length} 种画风｜单位：${pt.units || "ratio"}`);
-            for (const [k, v] of Object.entries(styles)) {
-              lines.push(`  · ${k}（${v.cn}）→ ${v.heads}头身｜身 ${v.torso_h}｜腿 ${v.legs_h}｜臂 ${v.arms_h}`);
-            }
-            lines.push(`- 用法：plan op=proportion style=<画风名>`);
-          } else {
-            const t = styles[style];
-            if (!t) {
-              lines.push(`- 未找到画风「${style}」。可选：${Object.keys(styles).join(" / ")}`);
-            } else {
-              lines.push(`- ${style}（${t.cn}）：${t.heads}头身`);
-              lines.push(`  头：1｜身：${t.torso_h}｜腿：${t.legs_h}｜臂：${t.arms_h}`);
-              if (t.note) lines.push(`  ${t.note}`);
-            }
           }
         } else if (String(op).startsWith("generator")) {
           if (op === "generator_list") {
