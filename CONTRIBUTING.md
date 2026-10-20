@@ -1,5 +1,74 @@
 # 参与贡献（Contributing）
 
+## 仓库布局：本仓库是发布物，开发树在旁
+
+**本仓库（`openhanako-blender-bridge`）= 发布物，App 内容直接在根目录。**
+这与族内其他仓库（gallery / mail / tavern）一致。
+
+但**开发工作不在这里做**。开发树在本地另一个目录，App 本体是它的一个**子目录**：
+
+```
+blender-app/                    ← 开发树（开发仓库的根，不对外）
+├── blender-bridge/             ← App 本体，对应本仓库的根
+│   ├── index.js                ┐
+│   ├── manifest.json           │  这些在发布仓库里
+│   └── ui/ runtime/ vendor/... ┘  是【根目录】下的同名项
+├── _probe/                     ← 测试与打包工具（不发布）
+├── generators/                 ← 生成器源（不发布）
+├── PLAN-*.md                   ← 计划文档（不发布）
+└── package.json                ← 开发工作区的包描述（不发布）
+```
+
+**坐标变换：`blender-app/blender-bridge/X` → 本仓库的 `X`。**
+子目录提根，其余全部不进去。
+
+### 怎么从开发树同步到这里
+
+```bash
+# 在开发树上操作；开工前先确认工作区干净
+git -C <开发树> status --short
+
+# 抽出发布树（把子目录提到根，历史保留）
+git -C <开发树> subtree split --prefix=blender-bridge -b _release-src
+
+# 建一个独立 worktree（不要 checkout！见下）
+git -C <开发树> worktree add <临时目录> _release-src
+
+# 推到本仓库
+cd <临时目录>
+git push origin HEAD:main
+
+# 收尾
+git -C <开发树> worktree remove <临时目录>
+git -C <开发树> branch -D _release-src
+```
+
+> ⚠️ **不要直接 `git checkout <发布分支>`。** 那会把整个工作目录换成发布树，
+> `blender-bridge/` 目录会消失，`_probe/` 等未跟踪文件也可能被连带清掉。
+> 用 `worktree add` 在另一个目录里操作，完全不碰当前工作树。
+
+> ⚠️ **不要用 `gh repo create --source=.`。** 它在 worktree 里会报
+> “not a git repository”（worktree 的 `.git` 是指针文件），但**可能在报错前
+> 已经把当前分支推上去**。建仓库用 `gh api orgs/<org>/repos -X POST`，
+> 再单独配 remote、单独推——分两步，每步都能验。
+
+### 哪些不进去
+
+| 排除 | 理由 |
+|---|---|
+| `PLAN-*.md`、`CLEANUP-清单.md`、`*工作底稿*` | 计划与过程文档，属于开发树 |
+| `_probe/` | 测试与打包工具，随开发树 |
+| `generators/` | 生成器源，运行时从 App 数据目录读 |
+| `_camera-v1/`、`_kettle-v2/`、`_vendor-dsh/`、`_assets/` | 开发期素材 |
+| `dist/` | 构建产物（已在 `.gitignore`） |
+| `hana-app-skeleton/`、`package.json`（开发用） | 开发侧参考与脚本 |
+
+**判据不是名称前缀，而是「这句东西对使用这个 App 的人有没有用」。**
+例如 `_camera-v1/spec.py` 名字看着像临时目录，实际是完整的生成器规格，
+应该留在开发树（进开发仓库），但不进发布仓库。
+
+---
+
 ## 环境
 
 - Windows（本项目在 Windows 10 + PowerShell 7 上开发与验证）
@@ -8,7 +77,7 @@
 
 ## 开发工作流
 
-源码在 `blender-bridge/` 子目录里（开发仓库）。修改后：
+在**开发树**里操作。源码在本仓库对应 `blender-bridge/` 子目录。修改后：
 
 ```bash
 # 1. 跑测试（一条命令跑完全部）
