@@ -21,7 +21,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 // 免鉴权只读面的单一事实源（白名单 + 允许的方法 + 自检）。见该文件头注释。
-import { PUBLIC_READ_PATHS, isPublicRead, checkPolicy, browserFingerprintBlock } from "./relay-policy.mjs";
+import { PUBLIC_READ_PATHS, isPublicRead, checkPolicy, browserFingerprintBlock, safeRelativeName, firstRootContaining } from "./relay-policy.mjs";
 
 // ── G3 · 写路由清单（必须与下方路由逐条对应）────────────────────────────
 //
@@ -1850,10 +1850,42 @@ const server = http.createServer(async (req, res) => {
       const src = String(body.src || "");
       const destDir = String(body.destDir || "");
       if (!src || !destDir) return jsonReply(res, 200, { ok: false, error: "src 与 destDir 必填" });
+
+      // ── G5 · 参数绑定（发布审查五道闸之五）──────────────────────────
+      //
+      // ① src 必须落在允许的根内。
+      //    它总是 work / runs / 数据目录下的东西，不需要是任意位置。
+      const roots = [WORK, dirname(WORK), LOG_FILE ? dirname(LOG_FILE) : ""].filter(Boolean);
+      if (!firstRootContaining(roots, src)) {
+        log(`G5 拒绝：/deliver 的 src 在根外 — ${src}`);
+        return jsonReply(res, 400, {
+          ok: false, error: "src 在允许的根之外",
+          hint: `只接受：${roots.join(" / ")}`,
+        });
+      }
+
+      // ② names 必须是**裸文件名**。
+      //    ！这是真正的洞：`join(destDir, n)` 不挡 `..`，
+      //     而 destDir 是**用户配置的出口**（ComfyUI input 之类）——
+      //     按设计不能把它锁在某个根内；能锁的是**名字**。
+      //     要子目录就分两次调用，代价为零。
       try {
         if (!existsSync(destDir)) return jsonReply(res, 200, { ok: false, error: `目标目录不存在：${destDir}` });
         const { copyFileSync, readdirSync: rd } = await import("node:fs");
-        const names = Array.isArray(body.files) && body.files.length ? body.files : rd(src);
+        const rawNames = Array.isArray(body.files) && body.files.length ? body.files : rd(src);
+        const names = [];
+        const rejected = [];
+        for (const n of rawNames) {
+          if (safeRelativeName(n)) names.push(String(n)); else rejected.push(String(n));
+        }
+        if (rejected.length) {
+          log(`G5 拒绝：/deliver 的 files 含非裸文件名 — ${rejected.join(", ")}`);
+          return jsonReply(res, 400, {
+            ok: false,
+            error: "files 里含非裸文件名（不接受路径分隔符、. 或 ..）",
+            rejected,
+          });
+        }
         const copied = [];
         for (const n of names) {
           const s = join(src, n);

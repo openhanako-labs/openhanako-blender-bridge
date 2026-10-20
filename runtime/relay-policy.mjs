@@ -117,6 +117,75 @@ export function isWriteMethodViolation(expected, method) {
 }
 
 /**
+ * G5 · 参数绑定（发布审查五道闸之五）。
+ *
+ * 口径（发布手册 §1.1 G5）：凡接受文件位置的入口，一律
+ *   `path.resolve` + **最深已存在祖先的 `realpathSync`** + 前缀校验，绑定在配置根以内；
+ *   越界一律 400（或拒绝处理），违者不静默放行。
+ *
+ * 为何要“最深已存在祖先”——目标文件常常还不存在（正要写它），
+ *   直接 realpathSync 会抛。所以从它往上找到第一个存在的祖先做 realpath，
+ *   再把剩下的段拼回去。这样符号链接与 `..` 都在校验范围内。
+ *
+ * 为何 realpath 两侧都做：Windows 大小写不敏感，且两边都可能带符号链接。
+ */
+import { realpathSync, existsSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
+
+/**
+ * 只接受**裸文件名**（无目录分隔符、不是 . 或 ..）。
+ *
+ * 为何要这一条：`join(destDir, name)` 里若 name 是 `../../x`，join 不挡它。
+ *   而“把产物拷到某个目录”这个动作，本来就不需要名字里带路径——
+ *   需要子目录就分两次调用。所以这里只放行裸名字，代价为零、收益是封住逃逸。
+ * @returns {string|null} 合法则返回原名，否则 null
+ */
+export function safeRelativeName(name) {
+  const n = String(name == null ? "" : name);
+  if (!n) return null;
+  if (n.includes("/") || n.includes("\\")) return null;
+  if (n === "." || n === "..") return null;
+  if (n.includes("\0")) return null;
+  return n;
+}
+
+/**
+ * 解析到绝对路径：对**最深已存在祖先**做 realpath，再把剩下的段拼回去。
+ * 路径整个不存在时回退到 `resolve()`。
+ */
+export function resolveReal(p) {
+  let cur = resolve(String(p == null ? "" : p));
+  const tail = [];
+  for (;;) {
+    if (existsSync(cur)) {
+      let rp = cur;
+      try { rp = realpathSync(cur); } catch { /* 拿不到 realpath 就用原路径 */ }
+      return tail.length ? resolve(rp, ...tail.reverse()) : rp;
+    }
+    const parent = dirname(cur);
+    if (parent === cur) return resolve(String(p == null ? "" : p));
+    tail.push(cur.slice(parent.length + 1));
+    cur = parent;
+  }
+}
+
+/** `p` 是否落在 `root` 以内（含等于 root 本身）。两侧都 realpath 后再比。 */
+export function isInsideRoot(root, p) {
+  const r = resolveReal(root).toLowerCase();
+  const q = resolveReal(p).toLowerCase();
+  if (q === r) return true;
+  return q.startsWith(r.endsWith(sep) ? r : r + sep);
+}
+
+/** 返回第一个包含 `p` 的根；都不包含则 null。 */
+export function firstRootContaining(roots, p) {
+  for (const r of roots) {
+    try { if (isInsideRoot(r, p)) return r; } catch { /* 单个根失败不影响其余 */ }
+  }
+  return null;
+}
+
+/**
  * 自检：两条不变量是否成立。
  * relay 启动时调一次（错了就当场喊），测试里也调一次。
  * @returns {string[]} 问题清单，空数组 = 健康
