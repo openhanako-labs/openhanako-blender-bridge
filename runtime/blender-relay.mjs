@@ -23,6 +23,24 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 // 免鉴权只读面的单一事实源（白名单 + 允许的方法 + 自检）。见该文件头注释。
 import { PUBLIC_READ_PATHS, isPublicRead, checkPolicy, browserFingerprintBlock } from "./relay-policy.mjs";
 
+// ── G3 · 写路由清单（必须与下方路由逐条对应）────────────────────────────
+//
+// 发布手册 §1.1 G3：写路由 POST-only，方法不对要回 **405** 而不是 404。
+// 为何不是 404：404 说“这个路径不存在”，而它存在、只是不接受这个方法。
+//   两件事对调用方是不同的信号——跟免鉴权面上“路径不对”与“没权限”
+//   必须分开是同一个道理。
+//
+// ！这份清单是**镜像**，不是事实源。新增写路由时要同步加在这里，
+//   否那个路由方法写错时会落到 404 上。_probe/relay-routes.test.mjs 会核。
+const WRITE_PATHS = new Set([
+  "/doctor", "/see", "/do", "/scene", "/object", "/object/edit", "/raw",
+  "/render/pass", "/render/start", "/render/status",
+  "/rt/view", "/rt/act", "/rt/preset", "/rt/perf", "/rt/opt", "/rt/plan", "/rt/txn",
+  "/rt/loop", "/rt/headless", "/rt/who", "/rt/lease", "/rt/release", "/rt/worker", "/rt/job",
+  "/rt/commands", "/rt/capabilities",
+  "/deliver", "/service/status", "/service/start", "/service/stop", "/disconnect",
+]);
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 // ── 迁移自 dsh-blender-plugin（BSD-3-Clause，Copyright (c) 2026 sixtyseven67）──
@@ -1436,11 +1454,23 @@ function readBody(req, limit = 2 * 1024 * 1024) {
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
       if (!raw) return resolvePromise({});
+      let val;
       try {
-        resolvePromise(JSON.parse(raw));
+        val = JSON.parse(raw);
       } catch {
-        rejectPromise(new Error("请求体不是合法 JSON"));
+        return rejectPromise(new Error("请求体不是合法 JSON"));
       }
+      // ── G4：body 必须是非数组 JSON 对象 ──────────────────────────
+      // 为何还要这一条（上一条已经卡了 Content-Type）：
+      //   上一道堵的是“发不出 application/json”的那类跨站请求；
+      //   这一道堵的是“发得出、且长得像 JSON”却本质是数组/标量的输入
+      //   ——数组与标量在下游代码里会走到完全不同的分支，那是输入校验的形状。
+      if (val === null || typeof val !== "object" || Array.isArray(val)) {
+        const e = new Error("请求体必须是 JSON 对象（非数组）");
+        e.httpCode = 400;
+        return rejectPromise(e);
+      }
+      resolvePromise(val);
     });
     req.on("error", (e) => rejectPromise(e));
   });
@@ -1503,6 +1533,23 @@ const server = http.createServer(async (req, res) => {
   if (blockedBy) {
     log(`G2 拒绝：${req.method} ${path} — ${blockedBy}`);
     return jsonReply(res, 403, { ok: false, error: "forbidden" });
+  }
+
+  // ── G4：写路由的请求格式 ────────────────────────────────────────────
+  // 为何卡 Content-Type：跨站的 no-cors 简单请求只能发 text/plain 这类
+  //   「安全」类型，发不出 application/json。卡住它，就堵死了一整类
+  //   “网页偷偷驱动本机服务”。
+  // ！缺失也拒——「没说是什么类型」不等于「就是 json」。
+  if (req.method === "POST") {
+    const ctype = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+    if (ctype !== "application/json") {
+      log(`G4 拒绝：${req.method} ${path} — content-type=${ctype || "（缺）"}`);
+      return jsonReply(res, 415, {
+        ok: false,
+        error: "unsupported media type",
+        hint: "写路由要求 content-type: application/json",
+      });
+    }
   }
 
   if (path === "/health") {
@@ -1842,10 +1889,20 @@ const server = http.createServer(async (req, res) => {
       lastError = "";
       return jsonReply(res, 200, { ok: true });
     }
+    // ── G3：路径认得、方法不对 → 405（而不是 404）─────────────────────
+    if (WRITE_PATHS.has(path)) {
+      return jsonReply(res, 405, { ok: false, error: "method not allowed", hint: "该路径只接受 POST" });
+    }
+    if (path === "/preview") {
+      return jsonReply(res, 405, { ok: false, error: "method not allowed", hint: "该路径只接受 GET" });
+    }
     return jsonReply(res, 404, { ok: false, error: "not found" });
   } catch (e) {
     metrics.errors += 1;
-    return jsonReply(res, 200, { ok: false, error: String(e?.message || e), code: e?.code || null });
+    // G4：readBody 抛的格式错带 httpCode（400），按它回；
+    //   其余保持原约定（200 + ok:false）——改它会动到调用方的判断，不在这一闸的范围。
+    const code = Number(e?.httpCode) || 200;
+    return jsonReply(res, code, { ok: false, error: String(e?.message || e), code: e?.code || null });
   }
 });
 
