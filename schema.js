@@ -183,7 +183,7 @@
     grazing: { type: "boolean", description: "audit op=collide：true 则连拼缝/装配接触一起列出。默认只报真干涉（重叠区三个方向都有厚度）。" },
     seamMm: { type: "number", description: "audit op=collide：薄壳判定阈值（毫米）。零件最薄边 ≤ 它就当作板件。两个零件都是板件时，它们的相交归为拼缝。默认 12。" },
     view: { type: "string", description: "see：从哪个方位拍。iso（默认）/ front / back / left / right / top。给了就先转到那个方位再拍，拍完把视口还原。" },
-    fit: { type: "string", description: "see：boolean，是否自动取景。默认 true（按场景包围盒取，任何尺度都成立）；false = 拍当前视口（人自己调好了角度时用）。plan op=fit_help/mate_check：string，公差档——clearance（自由滑动 0.25）/ location（手压定位 0.15，默认）/ press（过盈压配 -0.05）/ snap（卡扣间隙 0.20）。" },
+    fit: { type: "string", description: "view：传 'false' 关掉自动算距离（默认是开的，按 Scene 包围盒反算）；see：boolean，是否自动取景。默认 true（按场景包围盒取，任何尺度都成立）；false = 拍当前视口（人自己调好了角度时用）。plan op=fit_help/mate_check：string，公差档——clearance（自由滑动 0.25）/ location（手压定位 0.15，默认）/ press（过盈压配 -0.05）/ snap（卡扣间隙 0.20）。" },
     op: { type: "string", description: "子动作。取值见该 action 的说明。" },
     args: { type: "object", description: "透传给契约层 / 规划器 / 生成器 / 机构的参数对象。plan op=fit_help 可传 {feature, d, m}；op=mate_check 可传 {conn_id, fit, nominal, tol_mm}。" },
     feature: { type: "string", description: "装配特征名（plan op=fit_help）：peg / socket / bolt_hole / bolt_circle / boss / snap_tab / snap_window / tab / slot。返回对应的公差值与 Blender 侧造法。" },
@@ -227,7 +227,9 @@
     format: { type: "string", description: "输出格式（默认 PNG）。" },
     wait: { type: "boolean", description: "true 则内联等待完成（最长约 25 秒，适合快图；慢图请用轮询）。" },
     note: { type: "string", description: "备注文本。" },
-    dir: { type: "string", description: "目录 / 方向参数（generator 存目录、motion 方向）。" },
+    dir: { type: "string", description: "目录 / 方向参数（generator 存目录、motion 方向）。view 自动取景时可用：iso（默认）/ front / back / left / right / top / bottom。" },
+    margin: { type: "number", description: "view 自动取景的留边倍数。默认 1.25（模型占画面约 80%）；给 1.0 = 刚好贴边，给 1.6 = 更远的全景。" },
+    overlays: { type: "boolean", description: "view：是否把 Blender 视口叠加层（网格线、原点箭头、修改器 gizmo、空物体圆圈）一并拍进去。默认 false（只要模型）。" },
     overwrite: { type: "boolean", description: "已存在时是否覆盖。" },
     // ── nodes（几何节点 / 材质）───────────────────────────────────────
     // ！这些键必须在这里登记。
@@ -346,7 +348,7 @@
     channel: ["passes", "object", "width", "height", "frame", "engine", "file", "deliver", "runId", "label"],
     assets: ["op", "assetType", "query", "category", "limit", "assetId", "resolution", "fileFormat"],
     render: ["op", "jobId", "engine", "width", "height", "frame", "format", "file", "wait"],
-    view: ["from", "look_at", "width", "height", "lens", "ortho", "runId", "label", "name", "hero", "continueRun"],
+    view: ["from", "look_at", "width", "height", "lens", "ortho", "runId", "label", "name", "hero", "continueRun", "fit", "dir", "margin", "overlays"],
     loop: ["op", "spec", "limit", "history", "path", "top", "iterations"],
     txn: ["op", "args", "label"],
     plan: ["op", "args", "feature", "fit", "nominal", "tol_mm", "d", "m", "conn_id", "style"],

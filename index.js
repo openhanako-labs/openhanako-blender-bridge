@@ -1326,16 +1326,107 @@ export default defineApp(async (sdk) => {
       }
 
       case "view": {
-        const spec = { from: args.from, look_at: args.look_at, width: args.width, height: args.height, lens: args.lens, ortho: args.ortho };
+        let specFrom = args.from;
+        let specLook = args.look_at;
+        let fitNote = null;
+
+        // 自动取景（默认开）。
+        //
+        // ！为何需要：view 原本**完全按调用方给的距离拍**，自己不算。
+        //   实测：一台 11.4 宽相机，我按“看起来差不多”给了距离 14，
+        //   而 50mm 在 39.6° 水平视角下 14 单位外只能看到 10.2 宽度——刚好装不下，成了特写。
+        //   这不是谁的错，是“让人心算三角”本身就不对：距离对视野的影响是反比，估不准。
+        //
+        // 做法：只给 look_at 而不给 from 时，根据场景包围盒 + 镜头视角反算距离。
+        //   显式给了 from 就完全尊重——那是“我就要从这个位置看”。
+        if (!specFrom && (args.fit !== false)) {
+          const dir = String(args.dir || "iso");
+          // 八个方位单位向量（从物体指向相机）
+          const U = 1 / Math.sqrt(3);
+          const DIRS = {
+            iso: [U, -U, U * 0.72], front: [0, -1, 0.18], back: [0, 1, 0.18],
+            left: [-1, 0, 0.18], right: [1, 0, 0.18],
+            top: [0, -0.01, 1], bottom: [0, -0.01, -1],
+          };
+          const v = DIRS[dir] || DIRS.iso;
+          try {
+            const bb = await relayFetch("/do", {
+              code: [
+                "import bpy",
+                "from mathutils import Vector",
+                "_ms = [o for o in bpy.context.scene.objects if o.type == 'MESH' and not (o.hide_render or o.hide_viewport)]",
+                "# 排除「薄片」：地面/背板这类东西能把包围盒撑到几十倍，但它不是主体。",
+                "# 判据：最薄边 / 最长边 < 0.02（真物体不会薄成一张纸）。",
+                "_keep = []",
+                "_drop = []",
+                "for _o in _ms:",
+                "    _d = _o.dimensions",
+                "    _mx = max(_d.x, _d.y, _d.z)",
+                "    _mn = min(_d.x, _d.y, _d.z)",
+                "    if _mx > 0 and (_mn / _mx) < 0.02:",
+                "        _drop.append(_o.name)",
+                "    else:",
+                "        _keep.append(_o)",
+                "# 全场景都是薄片时不能全删——那就是真要拍一张纸。",
+                "if not _keep:",
+                "    _keep = _ms",
+                "    _drop = []",
+                "if _keep:",
+                "    _pts = []",
+                "    for _o in _keep:",
+                "        for _c in _o.bound_box:",
+                "            _p = _o.matrix_world @ Vector(_c)",
+                "            _pts.append((_p.x, _p.y, _p.z))",
+                "    _xs = [p[0] for p in _pts]; _ys = [p[1] for p in _pts]; _zs = [p[2] for p in _pts]",
+                "    _cx = (max(_xs)+min(_xs))/2; _cy = (max(_ys)+min(_ys))/2; _cz = (max(_zs)+min(_zs))/2",
+                "    _dx = max(_xs)-min(_xs); _dy = max(_ys)-min(_ys); _dz = max(_zs)-min(_zs)",
+                "    _dn = '|'.join(_drop[:3]) if _drop else '-'",
+                "    print('DSH_FIT', round(_cx,3), round(_cy,3), round(_cz,3), round(_dx,3), round(_dy,3), round(_dz,3), len(_keep), len(_drop), _dn)",
+                "else:",
+                "    print('DSH_FIT_EMPTY')",
+              ].join("\n"),
+            }, 15_000);
+            const out = String((bb && bb.result && bb.result.result) || "");
+            const m = /DSH_FIT ([\d.eE+-]+) ([\d.eE+-]+) ([\d.eE+-]+) ([\d.eE+-]+) ([\d.eE+-]+) ([\d.eE+-]+) (\d+) (\d+) (\S+)/.exec(out);
+            if (m) {
+              const [cx, cy, cz, dx, dy, dz] = m.slice(1, 7).map(Number);
+              const kept = Number(m[7]);
+              const dropped = Number(m[8]);
+              const droppedNames = m[9] === "-" ? "" : m[9];
+              const diag = Math.sqrt(dx * dx + dy * dy + dz * dz);
+              const lens = Number(args.lens) || 50;
+              const sensorW = 36;                      // Blender 默认 36mm，AUTO 横向
+              const halfFov = Math.atan(sensorW / (2 * lens));
+              // 保证对角线填满且留出 margin（默汈 1.25 → 80% 占屏）
+              const margin = Math.max(1.05, Number(args.margin) || 1.25);
+              const dist = (diag * margin) / (2 * Math.tan(halfFov));
+              const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) || 1;
+              specFrom = [cx + (v[0] / len) * dist, cy + (v[1] / len) * dist, cz + (v[2] / len) * dist];
+              specLook = specLook || [cx, cy, cz];
+              fitNote = `按 ${kept} 个物体算距离（对角线 ${diag.toFixed(1)}）`
+                + (dropped ? `；排除了 ${dropped} 个薄片：${droppedNames}` : "");
+            }
+          } catch { /* 取不到包围盒就按调用方给的拍，不把拍图弄挂 */ }
+        }
+        if (!specLook) specLook = args.look_at;
+
+        const spec = { from: specFrom, look_at: specLook, width: args.width, height: args.height, lens: args.lens, ortho: args.ortho,
+          // ！overlays 默认关。view.py 一直支持这个参数，但 App 从没传过，
+          //   于是默认值生效——拍出来带着网格线、原点箭头、修改器橙色圆环、空物体圆圈。
+          //   那不是“出图”，那是“截图”。要叠加层就显式传 overlays=true。
+          overlays: args.overlays === true };
         const r = await relayFetch("/rt/view", { ...spec, asJson: true }, 60_000);
         if (r.ok === false) return textResult(`自定义视角出图失败：${r.error || "未知"}`);
         const meta = r.meta || {};
         const lines = [
           `已从指定视角出图`,
-          `- 相机：from=[${(meta.spec?.from || args.from || []).join(", ")}] look_at=[${(meta.spec?.look_at || args.look_at || []).join(", ")}]`,
+          `- 相机：from=[${(meta.spec?.from || specFrom || []).join(", ")}] look_at=[${(meta.spec?.look_at || specLook || []).join(", ")}]`,
           `- 尺寸：${meta.width}×${meta.height}（mode=${meta.mode}）`,
           `- 落盘：${meta.path || "-"}`,
         ];
+        // 告诉我们自己算过距离——否则下次又会以为“它自己会取景”。
+        if (fitNote) lines.push(`- 自动取景：${fitNote}`);
+        else if (!args.from && specFrom) lines.push(`- 自动取景：按场景包围盒反算距离（要自己定位置就传 from）`);
         if (meta.bytes) lines.push(`- 字节：${meta.bytes}`);
 
         // 单视角也归档：不然四张视角图各自孤立，看不出是同一批。
