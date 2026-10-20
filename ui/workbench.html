@@ -6,6 +6,10 @@
 <title>Blender 助手</title>
 <link rel="stylesheet" href="assets/app.css">
 <link rel="stylesheet" href="assets/workbench.css">
+<!-- ！panel.css 必须排在 workbench.css **之后**：
+     它里面的 .row / .steps 与 app.css 同名，靠加载顺序把作用范围限在设置面板内。
+     顺序挪了就会串到别的页面元素上。 -->
+<link rel="stylesheet" href="assets/panel.css">
 </head>
 <body>
 <div class="shell shell-solo">
@@ -18,6 +22,7 @@
         <button data-t="runs" class="on">产出</button>
         <button data-t="scene">场景</button>
         <button data-t="log">日志</button>
+        <button data-t="settings">设置</button>
       </div>
       <!-- 状态跟标签挨着：它俩是一伙的（“在哪页”+“通道通不通”）。
            甩到最右边会撞上宿主控件区——卡片右上 100×40 是宿主的。 -->
@@ -177,6 +182,79 @@
           <button class="b" id="b-clear">清空</button>
         </div>
         <div class="wb-log" id="log"></div>
+      </div>
+    </section>
+
+    <!-- ── 设置 ──
+         原先这些挂在宿主的总设置页里（contributes.settings → /settings.html）。
+         搬进来的理由：设置是**这个 App 的零件**，散在宿主总设置里就没人知道该去哪找；
+         而且“装了什么、往哪投、归档怎么清”是使用本草时随时要看的，
+         不该逼人离开卡片、去另一个地方改。 -->
+    <section class="wb-pane" id="p-settings">
+      <div class="wb-pad">
+
+        <section class="card">
+          <h2>addon 地址</h2>
+          <p class="hint">Blender 侧 addon 监听的地址。默认 127.0.0.1:9876。改完会自动重启中继。</p>
+          <div class="field-row">
+            <label class="field">
+              <span>主机</span>
+              <input id="host" type="text" value="127.0.0.1" spellcheck="false">
+            </label>
+            <label class="field">
+              <span>端口</span>
+              <input id="port" type="number" value="9876" min="1" max="65535">
+            </label>
+          </div>
+          <div class="row">
+            <button id="save" class="btn btn-primary">保存并重连</button>
+            <span id="save-note" class="hint"></span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>投递目录</h2>
+          <p class="hint">
+            产物默认归档在 App 数据目录里（谁也拿得到、不会丢）。
+            如果还想把成品再拷一份到别处——比如 ComfyUI 的 input 目录、你自己的工程文件夹——
+            把绝对路径填在这里。留空就不拷。
+          </p>
+          <label class="field" style="display:block">
+            <span>目标目录（绝对路径）</span>
+            <input id="deliver" type="text" placeholder="例如 D:\\ComfyUI\\input" spellcheck="false">
+          </label>
+          <div class="row">
+            <button id="save-deliver" class="btn btn-primary">保存</button>
+            <span id="deliver-note" class="hint"></span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>归档</h2>
+          <p class="hint">
+            每次产出（一次多视角 / 一次 QC / 一次导出）收进一个 run 目录，带户口、可标记、可回溯。
+            带基线标记的永远保留，其余只留最近 20 个。
+          </p>
+          <p class="hint" id="runs-note"></p>
+          <div class="row">
+            <button id="prune" class="btn">看要清理什么</button>
+            <span id="prune-note" class="hint"></span>
+          </div>
+          <div id="prune-list" class="hint" style="margin-top:8px"></div>
+        </section>
+
+        <section class="card">
+          <h2>安装指引</h2>
+          <ol class="steps">
+            <li>装 Blender 本体（4.x / 5.x 均可）。</li>
+            <li>Blender 里 <b>Edit → Preferences → Add-ons → Install…</b>，选 <code>addon.py</code>，勾选启用。</li>
+            <li>3D 视图按 <b>N</b>，找 <b>MCP for Blender</b> 面板，点 <b>Connect</b>（默认 127.0.0.1:9876）。</li>
+            <li>看顶栏那个状态点变绿就算通了；宿主侧栏「Blender 状态」里也有中继与 addon 的实时状态。</li>
+          </ol>
+          <p class="hint" id="workdir"></p>
+          <p class="hint" id="cfgpath"></p>
+        </section>
+
       </div>
     </section>
 

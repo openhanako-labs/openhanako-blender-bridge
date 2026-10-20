@@ -4,6 +4,10 @@
 // 宿主把 App 路由挂在 /api/apps/<appId>/routes 下，且要带 appSurfaceSession 凭证。
 // 裸 fetch 拿不到会话 → 403（不报错，只是取不到数据，页面上表现为"取不到 xx"）。
 import { hana } from './sdk.js';
+// 设置面板。原先挂在宿主的设置页，现在搬进本卡片的「设置」标签 ——
+// 那份模块自己读/写 #host / #save / #deliver / #prune 这些 id，
+// 它们就在本页的 #p-settings 里（模块脚本在 DOM 解析之后才执行，所以接得上）。
+import './settings.js';
 
 const $ = (id) => document.getElementById(id);
 

@@ -1,19 +1,19 @@
-// ui/assets/settings.js — Blender 助手 · 设置页
+// ui/assets/settings.js — Blender 助手 · 设置面板
+//
+// 设置已从宿主的设置页搬进 App 卡片（workbench 的「设置」标签），
+// 所以本文件现在由 workbench.js 引入，不再是独立页的入口。
+// 文件名保留是因为它管的事没变：读配置 / 存配置 / 看归档 / 清归档。
 import { hana } from './sdk.js';
 
-// 跟随宿主主题。
+// ！主题不在这里接 —— 由**所在页**负责（现在就是 workbench.js）。
 //
-// ！这里漏过：设置页早先只用 panel.css 里那两个写错名字的变量
-//   （--hana-bg / --hana-fg，从来没被注入过），于是永远走深色 fallback，
-//   在浅色主题上就是深底深字。workbench 看得清、设置页看不清，差别就在这里。
-//   host-theme.js 是要**显式调用**的（不是自执行），所以必须在这里接上。
-(async () => {
-  try {
-    await hana.ready();
-    const ht = await import('./host-theme.js');
-    ht.attachHostTheme({ hana });
-  } catch { /* 无宿主：用 app.css 里那份浅色默认值 */ }
-})();
+//   这里曾经是一个真坑：设置页自己接主题，而且用的是面板里两个写错名字的变量
+//   （--hana-bg / --hana-fg，从来没被注入过），于是永远走深色 fallback。
+//   同一时刻 workbench 看得清、设置页看不清 —— 不是“颜色没调好”，
+//   是根本没连上宿主。
+//
+//   搬进工作台之后更不能在这里接：attachHostTheme 是**显式调用**，
+//   而页面已经调过一次（还带 onChange）。再接一次就是两个监听抢同一件事。
 
 const $ = (id) => document.getElementById(id);
 
