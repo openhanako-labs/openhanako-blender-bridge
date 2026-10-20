@@ -2,10 +2,10 @@
   "manifestVersion": 2,
   "id": "blender-bridge",
   "name": "Blender 助手",
-  "version": "1.62.0",
-  "description": "把本机 Blender 接进 Hana：模型可以直接看视口、执行 bpy 代码、读场景结构、发起渲染并可取回图像。经受管中继连 Blender 侧 addon（127.0.0.1:9876），支持服务起停（计划任务，独立于 Hana 存活）。产出自动归档成带户口的 run 目录（可标基线、可回溯）。多会话共存有写锁防互踩。",
+  "version": "1.63.0",
+  "description": "本地建模：AI 看视口、跑代码、按参考图还原外形。",
   "entry": "index.js",
-  "icon": "assets/icon.svg",
+  "icon": "assets/icon-v2.png",
   "minAppVersion": "0.944.0",
   "network": {
     "allowedHosts": [
@@ -55,7 +55,7 @@
           "route": "/workbench.html"
         },
         "face": {
-          "image": "assets/cover.svg"
+          "image": "assets/cover-v2.png"
         }
       }
     ]

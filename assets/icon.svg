@@ -1,10 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <rect width="256" height="256" rx="56" fill="#0d1117"/>
-  <g stroke="#e8730c" stroke-width="4" fill="none" stroke-linejoin="round">
-    <path d="M128 52 L196 92 L196 172 L128 212 L60 172 L60 92 Z"/>
-    <path d="M128 52 L128 132"/>
-    <path d="M128 132 L196 92"/>
-    <path d="M128 132 L60 92"/>
+  <!-- Blender 助手 · 图标
+       口径（Hana App 发布与视觉手册 §三 / §四）：
+         · 米白底 #F2EAD9 + 墨 #2B241E
+         · 身份色 钢青 #4A6E80（橘已被音频占用，不能撞）
+         · 元素 ≤ 3、实心填充 > 描边
+         · 描边 ≥ 画布 4% = 256 制下 ≥ 10px
+         · 终产 256×256 PNG（打包器栅格化） -->
+  <rect width="256" height="256" rx="56" fill="#F2EAD9"/>
+
+  <g stroke="#2B241E" stroke-width="11" stroke-linejoin="round">
+    <!-- 顶面：身份色 -->
+    <path d="M128 44 L202 86 L128 128 L54 86 Z" fill="#4A6E80"/>
+    <!-- 左面：墨 -->
+    <path d="M54 86 L128 128 L128 192 L54 150 Z" fill="#2B241E"/>
+    <!-- 右面：墨（浅一档，让两块侧面分得开） -->
+    <path d="M202 86 L202 150 L128 192 L128 128 Z" fill="#8A7E72"/>
   </g>
-  <circle cx="128" cy="132" r="6" fill="#e8730c"/>
 </svg>
