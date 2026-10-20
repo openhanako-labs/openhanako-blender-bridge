@@ -13,7 +13,7 @@ import math
 import os
 import traceback
 
-SRC = "W:/Games/Hanako/Work/blender-app/blender-bridge/runtime/motion_rig.py"
+SRC = __import__('os').path.join(__import__('os').path.dirname(__file__), "motion_rig.py")
 R = {"pass": 0, "fail": 0, "items": []}
 
 
@@ -103,7 +103,7 @@ ok("build 成功", b.get("ok") is True, b.get("error", ""))
 bd = json.loads(d("bind", {"armature": "XRig", "mode": "rigid"}))
 ok("bind 成功", bd.get("ok") is True, bd.get("error", ""))
 
-OUT = "W:/Games/Hanako/.hanako/app-data/blender-bridge/work/_selftest_motion.json"
+OUT = os.path.join(os.environ.get("TEMP", "."), "_selftest_motion.json")
 e = json.loads(d("export", {"armature": "XRig", "out": OUT}))
 ok("export 成功", e.get("ok") is True, e.get("error", ""))
 ok("导出了 3 个关节", e.get("joints_count") == 3, str(e.get("joints_count")))

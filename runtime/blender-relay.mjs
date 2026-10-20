@@ -1225,11 +1225,12 @@ function resolveBlenderExe(overridePath) {
   if (overridePath) cands.push(String(overridePath));
   if (serviceProc.blenderExe) cands.push(serviceProc.blenderExe);
   // 常见位置（便携解压的目录名带版本号，所以用一层扫描）
+  // 可用环境变量 BLENDER_HOME 指定非标准安装位置。
   const roots = [
-    "W:\\Games\\Blender",
+    process.env.BLENDER_HOME,
+    process.env.ProgramFiles && join(process.env.ProgramFiles, "Blender Foundation"),
     join(process.env.LOCALAPPDATA || "", "Programs"),
     "C:\\Program Files\\Blender Foundation",
-    "D:\\Blender",
   ];
   for (const root of roots) {
     if (!root || !existsSync(root)) continue;

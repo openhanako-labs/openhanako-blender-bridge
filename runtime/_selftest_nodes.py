@@ -13,7 +13,7 @@ import bpy
 import json
 import traceback
 
-SRC = "W:/Games/Hanako/Work/blender-app/blender-bridge/runtime/nodes.py"
+SRC = __import__('os').path.join(__import__('os').path.dirname(__file__), "nodes.py")
 
 R = {"pass": 0, "fail": 0, "items": []}
 

@@ -25,6 +25,22 @@ const $ = (id) => document.getElementById(id);
 // 不记成功请求的响应体：那不是日志，那是数据。
 let LOG_SINK = null;   // 由下方接上 logLine，避免函数声明顺序问题
 
+// Promise 超时闸。
+//
+// 为什么必须有：宿主桥的 fetch 在极端情况下**不返回也不报错**——
+// 实测过一次，「派活」发出后卡片按钮永远停在「派发中…」。
+// 因为 后端每个 bus.request 有 8-15s 超时，而前端这条链上一个都没有，
+// 所以任何一环挂死，调用方的 .then/.catch 都不触发，UI 就冻在那里。
+//
+// 超时后 reject，让 UI 能说「没回来」，而不是永远「在忙」。
+function withTimeout(promise, ms, label) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label || '请求'}超时（${Math.round(ms / 1000)}s 未应答）`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 async function api(path, body) {
   const init = body === undefined
     ? { cache: 'no-store' }
@@ -33,7 +49,12 @@ async function api(path, body) {
   const t0 = Date.now();
   let r;
   try {
-    r = await hana.api.fetch(path, init);
+    // ！总超时：后端每个 bus.request 都有 8-15s 超时，但**前端没有**。
+    //   宿主桥一旦不返回（session:send-custom 带 triggerTurn 会在宿主侧
+    //   真起一轮对话，那条路径挂死过一次），Promise 就悬着，
+    //   调用方的 .then/.catch 都不触发——按钮永远停在「派发中…」。
+    //   所以这里加一道闸：超时就 reject，让人看到「没回来」而不是「一直在忙」。
+    r = await withTimeout(hana.api.fetch(path, init), 45000, `${method} ${path}`);
   } catch (e) {
     // 连请求都没发出去（凭证缺失、网络层报错）——这比 HTTP 错误更难查，单独记
     if (LOG_SINK) LOG_SINK(`✗ ${method} ${path} 未送达（${Math.round(Date.now() - t0)}ms）：${e}`);
@@ -490,6 +511,18 @@ async function dispatch() {
   }
   btn.disabled = true; btn.textContent = '派发中…';
 
+  // ！兜底闸：无论下面发生什么（含 api 挂死、异常没被接到），
+  //   按钮必须在 60s 内恢复。一次派活的正常耗时是秒级，
+  //   超过这个数就是出了问题——而此时最不该做的是让人对着一个“永远在忙”的按钮。
+  const restoreBtn = () => {
+    try { btn.disabled = false; btn.textContent = '派给助手'; } catch { /* 元素可能已卸载 */ }
+  };
+  const btnGuard = setTimeout(() => {
+    restoreBtn();
+    hint.classList.remove('ok');
+    hint.textContent = '没发出去：请求超时未应答（后端或宿主桥没回）';
+  }, 60000);
+
   api('/blender-bridge/runs/feedback', { id: runId, text: v })
     .catch(() => null)
     .then((fr) => {
@@ -504,7 +537,8 @@ async function dispatch() {
       return api('/blender-bridge/dispatch', { brief: v, runId, agentId, modelId, provider });
     })
     .then((r) => {
-      btn.disabled = false; btn.textContent = '派给助手';
+      clearTimeout(btnGuard);
+      restoreBtn();
       if (r && r.ok) {
         // 把“去了哪”说清楚。模型换失败要带原因——
         // 只说“没换成”等于没说，人不知道该去改什么。
@@ -523,7 +557,8 @@ async function dispatch() {
       }
     })
     .catch((e) => {
-      btn.disabled = false; btn.textContent = '派给助手';
+      clearTimeout(btnGuard);
+      restoreBtn();
       hint.classList.remove('ok');
       hint.textContent = '没发出去：' + String((e && e.message) || e).slice(0, 80);
     });

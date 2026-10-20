@@ -17,7 +17,7 @@ import json
 import math
 import traceback
 
-SRC = "W:/Games/Hanako/Work/blender-app/blender-bridge/runtime/motion_rig.py"
+SRC = __import__('os').path.join(__import__('os').path.dirname(__file__), "motion_rig.py")
 R = {"pass": 0, "fail": 0, "items": []}
 
 
