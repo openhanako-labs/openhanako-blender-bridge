@@ -96,12 +96,14 @@ function setMsg(t, busy) {
 }
 
 // 短暂提示：说完自动淡出，不占着地方
+// 3.2s 太短了——一次删除/派活的结果，人可能正好没在看。
+// 重要结果用 flashMsg(t, ms) 手动拉长。
 let msgTimer = null;
-function flashMsg(t) {
+function flashMsg(t, ms = 3200) {
   const m = $('msg'); if (!m) return;
   m.textContent = t;
   clearTimeout(msgTimer);
-  msgTimer = setTimeout(() => { m.textContent = ''; }, 3200);
+  msgTimer = setTimeout(() => { m.textContent = ''; }, ms);
 }
 
 function esc(s) {
@@ -150,11 +152,16 @@ function showTab(t) {
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
   document.querySelectorAll('.wb-pane').forEach((p) => p.classList.toggle('on', p.id === 'p-' + t));
   if (history.replaceState) history.replaceState(null, '', '#' + t);
+  // 切到设置时顺手拉一次回收站——那个数字是会变的（删/恢复/清空），
+  // 而人不该为了看一眼而先点一个「刷新」。
+  if (t === 'settings' && typeof loadTrash === 'function') void loadTrash();
 }
 document.querySelectorAll('#tabs button').forEach((b) => { b.onclick = () => showTab(b.dataset.t); });
 (function initTab() {
   const h = location.hash.replace(/^#/, '');
-  if (['runs', 'view', 'exec', 'log'].includes(h)) showTab(h);
+  // ！这个白名单以前没有 settings，所以「刷新后停在设置页」是做不到的——
+  //   地址栏写着 #settings，页面却回到产出。现在补上。
+  if (['runs', 'view', 'exec', 'log', 'settings'].includes(h)) showTab(h);
 })();
 
 // ── 通道状态 ──────────────────────────────────────────────────────────────
@@ -440,32 +447,105 @@ $('d-shoot').onclick = () => shootViews();
 $('d-delivered').onclick = () => { if (state.cur) markTag(state.cur.id, 'delivered'); };
 
 // 删除这一版。
-// 为何要二次确认：它把整个 run 目录移进 .trash——虽可恢复，但从界面上看是「东西没了」。
-// 为何不是 window.confirm：卡片沙箱里不一定有那个；而且这里用的是下方的确认条。
+// 删除这一版。
+//
+// ！踩过的坑：原本这里用 window.confirm 做二次确认。
+//   卡片沙箱里**没有 confirm**，它抛 TypeError——而它在 onclick 里、又在任何 try 之外，
+//   于是后面的代码一行都不执行，按钮看上去就是「按了没反应」。
+//   教训：确认不能靠一个不保证存在的弹窗。改成**页面内两步**：
+//   第一次点变「真删？」，3 秒内再点才执行；不动就自己退回。
+let pendingDelete = null;
 $('d-delete').onclick = () => {
   if (!state.cur) return;
   const id = state.cur.id;
-  if (!window.confirm(`删除「${id}」？\n\n它会被移进回收站（可恢复），不是真删。`)) return;
   const b = $('d-delete');
+
+  // 第一次：只要不处于「等确认」状态，就只切换文案，不动数据
+  if (pendingDelete !== id) {
+    pendingDelete = id;
+    if (b) { b.textContent = '再点一次确认删除'; b.classList.add('danger'); }
+    setTimeout(() => {
+      if (pendingDelete === id) {
+        pendingDelete = null;
+        if (b) b.textContent = '删除这一版';
+      }
+    }, 3000);
+    return;
+  }
+
+  // 第二次：真删
+  pendingDelete = null;
   if (b) { b.disabled = true; b.textContent = '删除中…'; }
   api('/blender-bridge/runs/delete', { id })
     .then((r) => {
       if (b) { b.disabled = false; b.textContent = '删除这一版'; }
       if (r && r.ok) {
-        flashMsg('已移入回收站');
+        flashMsg(`已删「${id}」→ 回收站（可恢复）`, 8000);
         logLine('删除 run：' + id);
         state.cur = null;
         loadRuns();
       } else {
-        flashMsg('没删掉：' + ((r && r.error) || '未知'));
+        flashMsg('没删掉：' + ((r && r.error) || '未知'), 10000);
       }
     })
     .catch((e) => {
       if (b) { b.disabled = false; b.textContent = '删除这一版'; }
-      flashMsg('没删掉：' + String((e && e.message) || e).slice(0, 60));
+      flashMsg('没删掉：' + String((e && e.message) || e).slice(0, 70), 10000);
     });
 };
 $('d-untag').onclick = () => { if (state.cur) markTag(state.cur.id, null); };
+
+// ── 回收站 ──
+// 它以前只能从工具面调 runs op=trash，界面上根本看不到。
+async function loadTrash() {
+  const note = $('trash-note'), list = $('trash-list'), btn = $('trash-purge');
+  if (note) note.textContent = '读取中…';
+  let r = null;
+  try { r = await api('/blender-bridge/runs/trash'); } catch (e) { r = null; }
+  if (!r || !r.ok) {
+    if (note) note.textContent = '读不到回收站：' + ((r && r.error) || '请求失败');
+    if (btn) btn.disabled = true;
+    return;
+  }
+  const mb = (r.bytes / 1048576).toFixed(2);
+  if (r.count === 0) {
+    if (note) note.textContent = '回收站是空的。';
+    if (list) list.textContent = '';
+    if (btn) btn.disabled = true;
+    return;
+  }
+  if (note) note.textContent = `${r.count} 项，占 ${mb} MB（这些空间要清空才能收回）`;
+  if (list) list.textContent = r.items.slice(0, 30).join('\n') + (r.items.length > 30 ? `\n…还有 ${r.items.length - 30} 项` : '');
+  if (btn) btn.disabled = false;
+}
+if ($('trash-load')) $('trash-load').onclick = loadTrash;
+
+// 清空也要两步：它不可恢复，而且删的可能不只一两个。
+let pendingPurge = false;
+if ($('trash-purge')) $('trash-purge').onclick = async () => {
+  const btn = $('trash-purge'), msg = $('trash-msg');
+  if (!pendingPurge) {
+    pendingPurge = true;
+    if (btn) btn.textContent = '再点一次确认清空';
+    if (msg) msg.textContent = '不可恢复';
+    setTimeout(() => {
+      if (pendingPurge) { pendingPurge = false; if (btn) btn.textContent = '清空回收站'; if (msg) msg.textContent = ''; }
+    }, 4000);
+    return;
+  }
+  pendingPurge = false;
+  if (btn) { btn.disabled = true; btn.textContent = '清空中…'; }
+  try {
+    const r = await api('/blender-bridge/runs/trash/purge');
+    if (msg) msg.textContent = (r && r.ok) ? `已清掉 ${r.purged} 项` : ('没清掉：' + ((r && r.error) || '未知'));
+    flashMsg((r && r.ok) ? `已清空回收站（${r.purged} 项）` : '清空失败', 8000);
+  } catch (e) {
+    if (msg) msg.textContent = '没清掉：' + String((e && e.message) || e).slice(0, 60);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '清空回收站'; }
+    loadTrash();
+  }
+};
 $('d-notes-toggle').onclick = () => {
   notesOpen = !notesOpen;
   const np = $('d-notes'), t = $('d-notes-toggle');
@@ -565,7 +645,7 @@ async function dispatch() {
         hint.textContent = '已派给助手' + (bits.length ? ' · ' + bits.join(' · ') : '');
         hint.classList.add('ok');
         ta.value = '';
-        flashMsg('已派给助手');
+        flashMsg('已派给助手', 8000);
         logLine('派活：' + v.slice(0, 60));
         return;
       }
@@ -579,7 +659,7 @@ async function dispatch() {
         hint.classList.remove('ok');
         hint.textContent = `已提交，还在跑${tid ? '（' + tid + '）' : ''}：话很可能已经送到了——先别重点；正在等结果…`;
         ta.value = '';
-        flashMsg('已提交，正在后台跑');
+        flashMsg('已提交，正在后台跑', 8000);
         logLine('派活提交：' + v.slice(0, 50) + (tid ? '（' + tid + '）' : ''));
 
         // 自己去追结果，别把「去旁的工具查一遍」这种活推给人。
@@ -598,7 +678,7 @@ async function dispatch() {
               else if (sr.modelSwitched === false) bits.push('模型没换成：' + (sr.modelError || '未知'));
               hint.textContent = '已派给助手' + (bits.length ? ' · ' + bits.join(' · ') : '');
               hint.classList.add('ok');
-              flashMsg('已派给助手');
+              flashMsg('已派给助手', 8000);
               return;
             }
             if (sr && sr.ok === false) {

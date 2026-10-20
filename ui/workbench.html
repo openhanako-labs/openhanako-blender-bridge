@@ -243,6 +243,25 @@
           <div id="prune-list" class="hint" style="margin-top:8px"></div>
         </section>
 
+        <!-- 回收站。
+             为何需要单独一块：删除只是把目录移进 .trash，**磁盘一点没省**。
+             而 .trash 没有任何定时清理，界面上也看不到它——
+             一个只进不出的回收站不是回收站，是垃圾场。 -->
+        <section class="card">
+          <h2>回收站</h2>
+          <p class="hint">
+            删除的版本会先到这里（可恢复），但**占的磁盘一点没少**。
+            没有定时清理——想收回空间得在这里手动清。
+          </p>
+          <p class="hint" id="trash-note">读取中…</p>
+          <div class="row">
+            <button id="trash-load" class="btn">刷新</button>
+            <button id="trash-purge" class="btn" disabled>清空回收站</button>
+            <span id="trash-msg" class="hint"></span>
+          </div>
+          <div id="trash-list" class="hint" style="margin-top:8px"></div>
+        </section>
+
         <section class="card">
           <h2>安装指引</h2>
           <ol class="steps">

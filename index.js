@@ -1360,12 +1360,33 @@ export default defineApp(async (sdk) => {
           }
         }
 
+        // 默认名字：从场景里取主网格物体。
+        //
+        // 为何不是「视角 + 时间」：时间只能告诉你谁新，不能告诉你「这一版是什么」。
+        //   30 个 run 里 26 个叫「视角」的教训就是——名字要能区分「内容」，不是「先后」。
+        // 为何只取一个且不超过 18 字：它在 208px 宽的侧栏里要一行放得下。
+        let autoLabel = null;
+        if (!args.label && !resumeId) {
+          try {
+            const sn = await relayFetch("/do", {
+              code: [
+                "import bpy",
+                "_ms = [o for o in bpy.context.scene.objects if o.type == 'MESH' and not o.hide_viewport]",
+                "if _ms:",
+                "    _ms.sort(key=lambda o: -(o.dimensions.x * o.dimensions.y * o.dimensions.z))",
+                "    print('DSH_LABEL', _ms[0].name)",
+              ].join("\n"),
+            }, 12_000);
+            const out = String((sn && sn.result && sn.result.result) || "");
+            const mm = /DSH_LABEL ([^\r\n]+)/.exec(out);
+            if (mm) autoLabel = String(mm[1]).trim().slice(0, 18);
+          } catch { /* 取不到就用时间兜底，不为一个名字把拍图弄挂 */ }
+        }
+
         const arc = autoArchive({
           runId: resumeId,
-          // ！默认 label 原来固定是「视角」，结果 30 个 run 里有 26 个都叫「视角」，
-          //   人只能靠时间戳认。名字是用来区分的，重名等于没有。
-          //   现在：续入同一版时沿用旧名；新建时带时间，至少能一眼认出先后。
-          label: args.label || (resumeId ? undefined : `视角 ${new Date().toTimeString().slice(0, 5)}`),
+          // 默认名优先级：显式 label → 场景主物体名 → 时间兜底
+          label: args.label || (resumeId ? undefined : (autoLabel || `视角 ${new Date().toTimeString().slice(0, 5)}`)),
           action: "view",
           items: meta.path ? [{ from: meta.path, kind: args.hero ? "hero" : "view", name: args.name || null }] : [],
         });
@@ -4436,6 +4457,53 @@ export default defineApp(async (sdk) => {
         } catch (e) {
           return c.json({ ok: false, error: msgOf(e) }, 502);
         }
+      });
+
+      // 回收站：看有什么 / 恢复 / 清空。
+      //
+      // 为何要有它：回收站只进不出，界面上又没入口——
+      //   用户问「会定时清理吗」的时候，答案其实是「不会，而且你也看不到它」。
+      //   一个只进不出的回收站不是回收站，是垃圾场。
+      app.get("/blender-bridge/runs/trash", (c) => {
+        try {
+          if (!state.runs) return c.json({ ok: false, error: "归档器未就绪" }, 500);
+          const items = state.runs.listTrash();
+          let bytes = 0;
+          for (const it of items) {
+            try {
+              const walk = (d) => {
+                for (const e of readdirSync(d, { withFileTypes: true })) {
+                  const p = join(d, e.name);
+                  if (e.isDirectory()) walk(p);
+                  else { try { bytes += statSync(p).size; } catch { /* 单个文件读不到不影响总数 */ } }
+                }
+              };
+              walk(it.dir);
+            } catch { /* 目录没了就算 0 */ }
+          }
+          return c.json({ ok: true, count: items.length, bytes, items: items.map((x) => x.name) });
+        } catch (e) { return c.json({ ok: false, error: msgOf(e) }, 502); }
+      });
+
+      app.post("/blender-bridge/runs/trash/restore", async (c) => {
+        try {
+          if (!state.runs) return c.json({ ok: false, error: "归档器未就绪" }, 500);
+          let body = {};
+          try { body = await c.req.json(); } catch { body = {}; }
+          const name = String(body.name || "");
+          if (!name) return c.json({ ok: false, error: "需要 name" }, 400);
+          const r = state.runs.restoreOne(name);
+          if (!r.ok) return c.json({ ok: false, error: r.error }, 400);
+          return c.json({ ok: true, id: r.id });
+        } catch (e) { return c.json({ ok: false, error: msgOf(e) }, 502); }
+      });
+
+      app.post("/blender-bridge/runs/trash/purge", (c) => {
+        try {
+          if (!state.runs) return c.json({ ok: false, error: "归档器未就绪" }, 500);
+          const r = state.runs.purgeTrash();
+          return c.json({ ok: true, purged: r.purged });
+        } catch (e) { return c.json({ ok: false, error: msgOf(e) }, 502); }
       });
 
       app.get("/blender-bridge/runs", (c) => {
