@@ -1,8 +1,21 @@
 # Blender 助手
 
+[![version](https://img.shields.io/badge/version-1.63.1-4A6E80)](https://github.com/openhanako-labs/openhanako-blender-bridge/releases)
+[![license](https://img.shields.io/badge/license-AGPL--3.0-4A6E80)](LICENSE)
+[![blender](https://img.shields.io/badge/blender-4.x%2B-4A6E80)](https://www.blender.org/)
+
 把本机 Blender 接进 Hana。模型可以直接**看视口、跑 bpy 代码、读场景结构、搜索参数、下判断**——不需要点鼠标，不需要把截图塞进提示词。
 
 > 起这个名字是因为它做的事很清楚：一座桥。桥的两头是 Hana 和 Blender。
+
+| | |
+|---|---|
+| **版本** | [1.63.1](CHANGELOG.md) |
+| **环境** | Windows · Node ≥ 20 · Blender 4.x+ |
+| **安装** | [`INSTALL.md`](INSTALL.md) |
+| **变更** | [`CHANGELOG.md`](CHANGELOG.md) |
+| **安全** | [`SECURITY.md`](SECURITY.md)（五道闸，勿公开提漏洞） |
+| **参与** | [`CONTRIBUTING.md`](CONTRIBUTING.md)（含仓库布局与同步方法） |
 
 ---
 
