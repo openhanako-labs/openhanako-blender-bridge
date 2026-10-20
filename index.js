@@ -1362,7 +1362,10 @@ export default defineApp(async (sdk) => {
 
         const arc = autoArchive({
           runId: resumeId,
-          label: args.label || "视角",
+          // ！默认 label 原来固定是「视角」，结果 30 个 run 里有 26 个都叫「视角」，
+          //   人只能靠时间戳认。名字是用来区分的，重名等于没有。
+          //   现在：续入同一版时沿用旧名；新建时带时间，至少能一眼认出先后。
+          label: args.label || (resumeId ? undefined : `视角 ${new Date().toTimeString().slice(0, 5)}`),
           action: "view",
           items: meta.path ? [{ from: meta.path, kind: args.hero ? "hero" : "view", name: args.name || null }] : [],
         });
@@ -2733,6 +2736,45 @@ export default defineApp(async (sdk) => {
           const r = state.runs.prune({ keep: Number(args.keep) || DEFAULT_KEEP, dryRun: !!args.dryRun });
           const head = args.dryRun ? `将要清理 ${r.removed.length} 个（dry-run，未动磁盘）` : `已清理 ${r.removed.length} 个`;
           return textResult([head, `- 现有 ${r.total} 个（其中 ${r.tagged} 个带标记）`, r.removed.length ? "- " + r.removed.join("\n- ") : ""].filter(Boolean).join("\n"), { details: r });
+        }
+
+        // 删单个 run。
+        //
+        // 为何要有它：prune 只能按数量保留最近 N 个，而人想删的往往不是最旧的——
+        //   实测：最占地方的那几个（4.03MB / 2.09MB）恰好都是近期产物，keep=20 永远碰不到。
+        // 为何不是 rmSync：删错了能捡回来。prune 的 rmSync 是既存行为，不改。
+        if (op === "delete" || op === "remove") {
+          if (!state.runs) return textResult("归档器未就绪。");
+          // 只用 id：不为省一个字段名再增一个契约。
+          const id = String(args.id || "");
+          if (!id) return textResult("runs op=delete 需要 id（就是列表里那个 run 名）");
+          const r = state.runs.removeOne(id, { dryRun: !!args.dryRun });
+          if (!r.ok) return textResult(`没删掉：${r.error}`);
+          if (r.dryRun) return textResult(`将要移除：${r.id}\n- 目录：${r.dir}`, { details: r });
+          return textResult(`已移除：${r.id}\n- 移到了：${r.trashed}\n- 误删了就用 runs op=undelete name=<上面那串>` , { details: r });
+        }
+
+        if (op === "trash") {
+          if (!state.runs) return textResult("归档器未就绪。");
+          const items = state.runs.listTrash();
+          if (!items.length) return textResult("recycle 是空的。");
+          return textResult([`recycle 里有 ${items.length} 个：`, ...items.map((x) => `  ${x.name}`),
+            "", "恢复：runs op=undelete name=<上面那串>｜真删：runs op=purge_trash"].join("\n"), { details: { items } });
+        }
+
+        if (op === "undelete" || op === "restore_trash") {
+          if (!state.runs) return textResult("归档器未就绪。");
+          const name = String(args.name || args.id || "");
+          if (!name) return textResult("runs op=undelete 需要 name（runs op=trash 里列出的那个）");
+          const r = state.runs.restoreOne(name);
+          if (!r.ok) return textResult(`没恢复：${r.error}`);
+          return textResult(`已恢复：${r.id}`);
+        }
+
+        if (op === "purge_trash") {
+          if (!state.runs) return textResult("归档器未就绪。");
+          const r = state.runs.purgeTrash();
+          return textResult(`已真删 recycle 里的 ${r.purged} 个（不可恢复）`);
         }
 
         // list（默认）
@@ -4313,19 +4355,86 @@ export default defineApp(async (sdk) => {
         try {
           let body = {};
           try { body = await c.req.json(); } catch { body = {}; }
-          const out = await dispatchWork({
+
+          // ！这条路由曾经直接 await dispatchWork(...)，所以它一直是最坏 55s 的同步路。
+          //   工具面那条我已经改成「提交即返回」，**却忘了卡片走的是这条 HTTP 路由**。
+          //   结果就是：工具面测试全绿，而人在卡片上一点就 40s 后 Internal Server Error。
+          //   两条入口必须走同一套语义，否则“修好了”只是对自己而言。
+          const taskId = newDispatchTask();
+          const task = dispatchTasks.get(taskId);
+          dispatchWork({
             brief: body.brief,
             agentId: body.agentId,
             modelId: body.modelId,
             provider: body.provider,
             runId: body.runId,
             sessionId: body.sessionId,
+            onPhase: (p) => { task.phase = p; },
+          }).then((r) => {
+            task.state = "done";
+            task.result = r;
+          }).catch((e) => {
+            task.state = "failed";
+            task.error = msgOf(e);
           });
-          return c.json(out);
+
+          // 同上：快的情况（复用会话、不换模型）一句话内就完，先等 3s。
+          // 但绝不等 30s——那正是它撞墙的原因。
+          const deadline = Date.now() + 3000;
+          while (task.state === "running" && Date.now() < deadline) {
+            await sleep(150);
+          }
+
+          if (task.state === "done") return c.json({ ok: true, ...(task.result || {}) });
+          if (task.state === "failed") return c.json({ ok: false, error: task.error || "原因未知" });
+          // ③ 还在跑：告诉前端「已提交」+ taskId，**不要报错**。
+          //   报错会让人重发，而话很可能已经送到了。
+          return c.json({
+            ok: true,
+            running: true,
+            taskId,
+            phase: task.phase || null,
+          });
         } catch (e) {
           // “先写一句”这类是调用方的问题（400），其余当服务端错（502）。
           const m = msgOf(e);
           return c.json({ ok: false, error: m }, /先说一句|必须知道发给谁/.test(m) ? 400 : 502);
+        }
+      });
+
+      // 查派活结果（卡片轮询用）。
+      // 不轮询也行——人可以直接去助手会话看；但有个查处总比“不知道去哪了”好。
+      app.post("/blender-bridge/dispatch/status", async (c) => {
+        try {
+          let body = {};
+          try { body = await c.req.json(); } catch { body = {}; }
+          const t = dispatchTasks.get(String(body.taskId || ""));
+          if (!t) return c.json({ ok: false, error: "找不到这个任务（可能已超出保留的最近 20 个）" });
+          const sec = Math.round((Date.now() - t.startedAt) / 1000);
+          if (t.state === "running") return c.json({ ok: true, running: true, phase: t.phase || null, sec });
+          if (t.state === "failed") return c.json({ ok: false, error: t.error || "原因未知", sec });
+          return c.json({ ok: true, running: false, ...(t.result || {}), sec });
+        } catch (e) {
+          return c.json({ ok: false, error: msgOf(e) }, 502);
+        }
+      });
+
+      // 删除单个 run（移进 .trash，可恢复）。
+      //
+      // 为何单开一条而不是包进 /runs/op：卡片里点一下就该只做这一件事，
+      //   不需要它重走一遍 op 分派。
+      app.post("/blender-bridge/runs/delete", async (c) => {
+        try {
+          if (!state.runs) return c.json({ ok: false, error: "归档器未就绪" }, 500);
+          let body = {};
+          try { body = await c.req.json(); } catch { body = {}; }
+          const id = String(body.id || "");
+          if (!id) return c.json({ ok: false, error: "需要 id" }, 400);
+          const r = state.runs.removeOne(id, { dryRun: false });
+          if (!r.ok) return c.json({ ok: false, error: r.error }, 400);
+          return c.json({ ok: true, id: r.id, trashed: r.trashed });
+        } catch (e) {
+          return c.json({ ok: false, error: msgOf(e) }, 502);
         }
       });
 

@@ -438,6 +438,33 @@ function markTag(id, tag) {
 $('d-baseline').onclick = () => { if (state.cur) markTag(state.cur.id, 'baseline'); };
 $('d-shoot').onclick = () => shootViews();
 $('d-delivered').onclick = () => { if (state.cur) markTag(state.cur.id, 'delivered'); };
+
+// 删除这一版。
+// 为何要二次确认：它把整个 run 目录移进 .trash——虽可恢复，但从界面上看是「东西没了」。
+// 为何不是 window.confirm：卡片沙箱里不一定有那个；而且这里用的是下方的确认条。
+$('d-delete').onclick = () => {
+  if (!state.cur) return;
+  const id = state.cur.id;
+  if (!window.confirm(`删除「${id}」？\n\n它会被移进回收站（可恢复），不是真删。`)) return;
+  const b = $('d-delete');
+  if (b) { b.disabled = true; b.textContent = '删除中…'; }
+  api('/blender-bridge/runs/delete', { id })
+    .then((r) => {
+      if (b) { b.disabled = false; b.textContent = '删除这一版'; }
+      if (r && r.ok) {
+        flashMsg('已移入回收站');
+        logLine('删除 run：' + id);
+        state.cur = null;
+        loadRuns();
+      } else {
+        flashMsg('没删掉：' + ((r && r.error) || '未知'));
+      }
+    })
+    .catch((e) => {
+      if (b) { b.disabled = false; b.textContent = '删除这一版'; }
+      flashMsg('没删掉：' + String((e && e.message) || e).slice(0, 60));
+    });
+};
 $('d-untag').onclick = () => { if (state.cur) markTag(state.cur.id, null); };
 $('d-notes-toggle').onclick = () => {
   notesOpen = !notesOpen;
@@ -543,17 +570,48 @@ async function dispatch() {
         return;
       }
 
-      // ② 提交了，但还没跑完（后端 30s 硬上限，长活走「提交即返回」）。
+      // ② 提交了，但还没跑完。
       //   这时**话很可能已经送到了**，只是回执还没回来。
       //   界面必须说这个，否则人以为失败会去再点一次，助手就收到两遍。
       const running = r && (r.running === true || (r.details && r.details.running));
       if (running) {
         const tid = (r.details && r.details.taskId) || r.taskId || '';
         hint.classList.remove('ok');
-        hint.textContent = `已提交，还在跑${tid ? '（' + tid + '）' : ''}：话很可能已经送到了——先别重点，去助手会话看一眼；要查结果就用工具调 dispatch op=status`;
+        hint.textContent = `已提交，还在跑${tid ? '（' + tid + '）' : ''}：话很可能已经送到了——先别重点；正在等结果…`;
         ta.value = '';
         flashMsg('已提交，正在后台跑');
         logLine('派活提交：' + v.slice(0, 50) + (tid ? '（' + tid + '）' : ''));
+
+        // 自己去追结果，别把「去旁的工具查一遍」这种活推给人。
+        // 后端已返回值，不再需要人手动轮询。
+        if (tid) {
+          let tries = 0;
+          const tick = async () => {
+            tries += 1;
+            if (tries > 40) { hint.classList.remove('ok'); hint.textContent = '还没回：去助手会话看一眼（' + tid + '）'; return; }
+            let sr = null;
+            try { sr = await api('/blender-bridge/dispatch/status', { taskId: tid }); } catch { /* 下一轮再试 */ }
+            if (sr && sr.ok && sr.running === false) {
+              const bits = [];
+              if (sr.createdSession) bits.push('已建会话');
+              if (sr.modelSwitched === true) bits.push('已换模型');
+              else if (sr.modelSwitched === false) bits.push('模型没换成：' + (sr.modelError || '未知'));
+              hint.textContent = '已派给助手' + (bits.length ? ' · ' + bits.join(' · ') : '');
+              hint.classList.add('ok');
+              flashMsg('已派给助手');
+              return;
+            }
+            if (sr && sr.ok === false) {
+              hint.classList.remove('ok');
+              hint.textContent = '派活失败：' + (sr.error || '未知');
+              return;
+            }
+            // 还在跑：把阶段说出来，让人知道它没死
+            if (sr && sr.running && sr.phase) hint.textContent = `正在跑：${sr.phase}（${sr.sec || 0}s）`;
+            setTimeout(tick, 1500);
+          };
+          setTimeout(tick, 1200);
+        }
         return;
       }
 

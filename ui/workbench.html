@@ -57,6 +57,11 @@
                 <button class="b" id="d-load">装入场景</button>
                 <button class="b" id="d-delivered">已投递</button>
                 <button class="b" id="d-untag">取消标记</button>
+                <!-- 删除这一版。
+                     为何需要它：以前只能 prune（按数量留最近 N 个），
+                     而人想删的往往不是最旧的——实测最占地方的那两个恰好都是近期产物。
+                     为何是「移进回收站」而不是真删：删错了能捡回来。 -->
+                <button class="b danger" id="d-delete" type="button">删除这一版</button>
               </div>
             </div>
 
