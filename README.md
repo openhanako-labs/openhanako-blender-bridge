@@ -1,6 +1,6 @@
 # Blender 助手
 
-[![version](https://img.shields.io/badge/version-1.63.1-4A6E80)](https://github.com/openhanako-labs/openhanako-blender-bridge/releases)
+[![version](https://img.shields.io/badge/version-1.67.4-4A6E80)](https://github.com/openhanako-labs/openhanako-blender-bridge/releases)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-4A6E80)](LICENSE)
 [![blender](https://img.shields.io/badge/blender-4.x%2B-4A6E80)](https://www.blender.org/)
 
@@ -10,11 +10,11 @@
 
 | | |
 |---|---|
-| **版本** | [1.63.1](CHANGELOG.md) |
+| **版本** | [1.67.4](CHANGELOG.md) |
 | **环境** | Windows · Node ≥ 20 · Blender 4.x+ |
 | **安装** | [`INSTALL.md`](INSTALL.md) |
 | **变更** | [`CHANGELOG.md`](CHANGELOG.md) |
-| **安全** | [`SECURITY.md`](SECURITY.md)（五道闸，勿公开提漏洞） |
+| **安全** | [`SECURITY.md`](SECURITY.md)（多道闸，含 addon 入口鉴权 G0；勿公开提漏洞） |
 | **参与** | [`CONTRIBUTING.md`](CONTRIBUTING.md)（含仓库布局与同步方法） |
 
 ---
