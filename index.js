@@ -18,6 +18,7 @@ import { defineApp } from "./sdk/app-contract/server-client.js";
 import { randomBytes, randomInt } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import os from "node:os";
 import { createRunStore, TAG_BASELINE, TAG_DELIVERED, DEFAULT_KEEP } from "./lib/archive.mjs";
 import { pruneStaleRuntimeConfigs } from "./lib/runtime-config.mjs";
 import { loadTemplates, proportionReport, styleNames } from "./lib/proportion.mjs";
@@ -200,7 +201,7 @@ export default defineApp(async (sdk) => {
   //   还会误导后来查端口的人——它指着一个早已不存在的进程。
   //
   // 另：mode 0o600 + chmod 在 Windows 上多半是 no-op，不能当真防线。
-  function writeRuntimeConfig(port, readyMarker) {
+  function writeRuntimeConfig(port, readyMarker, addonToken) {
     const dir = join(dataDir, "integration");
     mkdirSync(dir, { recursive: true });
     const stale = pruneStaleRuntimeConfigs(dir);
@@ -217,6 +218,20 @@ export default defineApp(async (sdk) => {
       logFile: join(dataDir, "logs", "relay.log"),
       note: `blender-bridge relay v${APP_VERSION} @ ${new Date().toISOString()}`,
     };
+    // G0：addon 调用方令牌（与 addon 入口校验对应，见 SECURITY.md / PR #123）。
+    //   它和 G1 的 controlKey 是两回事：controlKey 保护「谁能动本中继」，
+    //   addonToken 保护「谁能直连 9876 调 Blender」。令牌不随包发布、不进中继配置残留，
+    //   写入本用户临时目录（Windows 上为当前用户级 AppData\Local\Temp，ACL 仅限该用户）。
+    //   addon 启动时从同一文件读取并逐条校验命令；relay 启动时也会再确保一次（见 relay.mjs）。
+    if (addonToken) {
+      config.addonToken = addonToken;
+      try {
+        const tf = process.env.BLENDERMCP_ADDON_TOKEN_FILE || join(os.tmpdir(), "blender-bridge.addon-token");
+        writeFileSync(tf, String(addonToken), { mode: 0o600 });
+        try { chmodSync(tf, 0o600); } catch { /* Windows 上多为 no-op */ }
+        log(`addon 调用方令牌已写入 ${tf}`);
+      } catch (e) { warn(`addon 令牌文件写入失败 ${msgOf(e)}`); }
+    }
     writeFileSync(configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
     try { chmodSync(configPath, 0o600); } catch { /* Windows 上多为 no-op */ }
     return configPath;
@@ -257,7 +272,10 @@ export default defineApp(async (sdk) => {
     //   —— `randomBytes(32).hex`，64 个字符。与 hanako-gallery / hanako-mail 同形，
     //   审查方不用为这一个 App 另记一套。
     const controlKey = randomBytes(32).toString("hex");
-    const configPath = writeRuntimeConfig(port, readyMarker, controlKey);
+    // G0：addon 调用方令牌。每次拉起重新生成（与 G1 controlKey 同生命周期），
+    //   经 writeRuntimeConfig 写入本用户临时目录令牌文件，并随配置传给 relay。
+    const addonToken = randomBytes(32).toString("hex");
+    const configPath = writeRuntimeConfig(port, readyMarker, addonToken);
 
     log(`启动中继受管 runtime（attempt ${attempt}/3，端口 ${port}，addon ${state.config.addonHost}:${state.config.addonPort}）`);
     let rt = null;

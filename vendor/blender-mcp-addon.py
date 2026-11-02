@@ -27,6 +27,17 @@ from urllib.parse import quote, urlencode, urlparse, urlunparse, parse_qsl
 from contextlib import contextmanager, redirect_stdout, suppress
 from bpy.app.handlers import persistent
 
+# ── 调用方认证（安全边界 G0，见 SECURITY.md 与 PR #123 审查意见）──────────────
+# addon 的 9876 回环入口原本零鉴权：任何能连上该端口的本机进程都能以 Blender 用户
+# 权限执行任意 Python（execute_code）。本模块让入口在执行前识别已授权调用方。
+# 纯 stdlib，可在无 Blender 下测试；解析规则与中继（addon-protocol.mjs）保持一致。
+import os as _os
+import sys as _sys
+_AA_DIR = _os.path.dirname(_os.path.abspath(__file__))
+if _AA_DIR not in _sys.path:
+    _sys.path.insert(0, _AA_DIR)
+from _addon_auth import resolve_token as _resolve_addon_auth_token, auth_ok as _addon_auth_ok
+
 bl_info = {
     "name": "MCP for Blender",
     "author": "Siddharth Ahuja",
@@ -1296,6 +1307,14 @@ class BlenderMCPServer:
             if not bpy.app.timers.is_registered(self._drain_command_queue):
                 bpy.app.timers.register(self._drain_command_queue, persistent=True)
 
+            _tok = _resolve_addon_auth_token()
+            if _tok is None:
+                print("BlenderMCP server started WITHOUT addon auth token "
+                      "(secure-by-default: all commands will be rejected until the "
+                      "blender-bridge relay provisions one). Ensure the relay is running.")
+            else:
+                print("BlenderMCP server started with addon-entry auth ENABLED "
+                      "(callers must present the shared token).")
             print(f"BlenderMCP server started on {self.host}:{self.port}")
         except Exception as e:
             print(f"Failed to start server: {str(e)}")
@@ -1443,6 +1462,25 @@ class BlenderMCPServer:
                         # Try to parse command
                         command = json.loads(buffer.decode('utf-8'))
                         buffer = b''
+
+                        # ── 调用方认证（G0）：执行前识别已授权调用方 ────────────
+                        # 覆盖全部命令（含 ping / get_addon_info 等存活与握手命令）。
+                        # 中继经协议层注入 auth；缺少令牌的直连进程一律被拒，
+                        # 从而堵住「绕过受管中继直连 9876 执行 Python」的旁路。
+                        _token = _resolve_addon_auth_token()
+                        if not _addon_auth_ok(command.get('auth'), _token):
+                            _why = 'token not provisioned' if _token is None else 'missing/wrong auth'
+                            print(f"Addon auth rejected command {command.get('type')!r}: {_why}")
+                            try:
+                                client.sendall(json.dumps({
+                                    'status': 'error',
+                                    'message': 'unauthorized: addon entry requires a valid auth token',
+                                }).encode('utf-8'))
+                            except Exception:
+                                pass
+                            # 拒绝该命令但不关闭连接：合法中继只会因令牌错配偶发一次，
+                            # 重连/重试即可；恶意直连只拿到 repeated 403，无法执行。
+                            continue
 
                         # Hand off to the main thread. Never call
                         # bpy.app.timers.register() from here - it is not

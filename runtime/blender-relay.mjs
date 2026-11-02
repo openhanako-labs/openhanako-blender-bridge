@@ -15,6 +15,7 @@
 
 import net from "node:net";
 import http from "node:http";
+import os from "node:os";
 import { readFileSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -238,6 +239,34 @@ if (!CONTROL_KEY) {
 // CFG_PATH 里仍有明文 key 的旧版本残留？现在不写了，但读取侧仍兼容一份已删的文件。
 // 读完立刻删：配置文件里虽已无密钥，但端口/readyMarker 也不该积在磁盘上。
 try { rmSync(CFG_PATH, { force: true }); } catch { /* 忽略 */ }
+
+// ── G0 · addon 调用方令牌（与 addon 入口校验对应，见 SECURITY.md 与 PR #123）──
+//
+// 为何需要它：addon 的 9876 回环端口原本零鉴权，任何本机进程直连都能以 Blender 用户
+// 权限执行任意 Python。宿主（index.js）每次启动生成 addonToken，写入本用户临时目录的
+// 令牌文件（0600）；本中继启动时把它落盘，addon 启动时从同一文件读取并校验每条命令。
+// 令牌不随包发布、不在配置里残留；env（BLENDERMCP_ADDON_TOKEN / _FILE）可覆盖以便强注入。
+// 注意：这枚令牌与 G1 的 CONTROL_KEY（中继自身调用方密钥）是两回事——
+//   CONTROL_KEY 保护「谁能动本中继」，addonToken 保护「谁能直连 9876 调 Blender」。
+if (cfg && cfg.addonToken) {
+  try {
+    const tf = process.env.BLENDERMCP_ADDON_TOKEN_FILE
+      || join(os.tmpdir(), "blender-bridge.addon-token");
+    writeFileSync(tf, String(cfg.addonToken), { mode: 0o600 });
+    log(`addon 调用方令牌已写入 ${tf}（addon 入口将据此校验调用方）`);
+  } catch (e) {
+    log(`警告：addon 令牌文件写入失败 ${e?.message || e}——addon 可能因读不到令牌而拒绝所有命令`);
+  }
+}
+
+/** 解析 addon 调用方令牌（与 addon-protocol.mjs / _addon_auth.py 同源规则）。*/
+function resolveAddonToken() {
+  const direct = process.env.BLENDERMCP_ADDON_TOKEN;
+  if (direct) return direct;
+  const file = process.env.BLENDERMCP_ADDON_TOKEN_FILE;
+  const p = file || join(os.tmpdir(), "blender-bridge.addon-token");
+  try { return readFileSync(p, "utf8").trim(); } catch { return ""; }
+}
 
 const PORT = Number(cfg.port);
 const READY_MARKER = String(cfg.readyMarker || "");
@@ -473,7 +502,11 @@ async function sendLegacy(commandType, params = {}, timeoutMs = DEFAULT_TIMEOUT_
   }
 
   const startedAt = Date.now();
-  const payload = JSON.stringify({ type: commandType, params }) + "\n";
+  // G0：兜底路径同样注入 addon 调用方令牌（与协议层 plan() 一致），否则 addon 会拒绝。
+  const _at = resolveAddonToken();
+  const _wire = { type: commandType, params: params || {} };
+  if (_at) _wire.auth = _at;
+  const payload = JSON.stringify(_wire) + "\n";
 
   const answer = await new Promise((resolvePromise, rejectPromise) => {
     const timer = setTimeout(() => {
